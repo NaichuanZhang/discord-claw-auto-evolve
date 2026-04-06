@@ -12,6 +12,7 @@ import type { CronJobCreate, CronJobPatch } from "../cron/types.js";
 import type { SkillService } from "../skills/service.js";
 import { getMemoryLines } from "../memory/memory.js";
 import { triggerRestart } from "../restart.js";
+import { registerHealthRoute } from "../evolution/health.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..", "..");
@@ -53,6 +54,9 @@ export function createApiRouter(opts: {
 }): Router {
   const { cronService, skillService, discordClient } = opts;
   const router = Router();
+
+  // Health endpoint (used by start.sh, no auth)
+  registerHealthRoute(router);
 
   // =========================================================================
   // Status
