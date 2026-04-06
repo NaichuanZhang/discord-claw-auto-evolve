@@ -6,6 +6,7 @@ import Config from "./pages/Config";
 import Cron from "./pages/Cron";
 import Skills from "./pages/Skills";
 import Logs from "./pages/Logs";
+import Evolution from "./pages/Evolution";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -186,6 +187,7 @@ const pages: Record<string, { label: string; component: React.FC }> = {
   config: { label: "Config", component: Config },
   cron: { label: "Cron", component: Cron },
   skills: { label: "Skills", component: Skills },
+  evolution: { label: "Evolution", component: Evolution },
   logs: { label: "Logs", component: Logs },
 };
 
