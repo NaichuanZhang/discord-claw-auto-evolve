@@ -30,6 +30,31 @@ notify() {
 }
 
 # ---------------------------------------------------------------------------
+# 0. Kill any existing bot instances
+# ---------------------------------------------------------------------------
+MY_PID=$$
+echo "[start] Checking for existing bot instances..."
+PIDS=$(ps aux | grep -E 'tsx.*src/index\.ts|node.*dist/index\.js' | grep -v grep | awk '{print $2}' || true)
+
+if [ -n "$PIDS" ]; then
+  for PID in $PIDS; do
+    if [ "$PID" != "$MY_PID" ]; then
+      echo "[start] Killing existing bot instance (PID $PID)..."
+      kill "$PID" 2>/dev/null || true
+    fi
+  done
+  # Give them a moment to shut down gracefully
+  sleep 2
+  # Force kill any that survived
+  for PID in $PIDS; do
+    if [ "$PID" != "$MY_PID" ] && kill -0 "$PID" 2>/dev/null; then
+      echo "[start] Force killing PID $PID..."
+      kill -9 "$PID" 2>/dev/null || true
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Pull latest
 # ---------------------------------------------------------------------------
 echo "[start] Pulling latest from origin/main..."

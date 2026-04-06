@@ -1,6 +1,7 @@
 import "dotenv/config";
 
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import path from "node:path";
 import { initDb } from "./db/index.js";
 import { initSoul, stopSoulWatcher } from "./soul/soul.js";
 import { initMemory, stopMemoryWatcher } from "./memory/memory.js";
@@ -19,41 +20,8 @@ import { setHealthDiscordClient, setServicesReady } from "./evolution/health.js"
 // Startup
 // ---------------------------------------------------------------------------
 
-function killExistingInstances(): void {
-  const myPid = process.pid;
-  try {
-    // Find all node processes running discordclaw's index
-    const out = execSync(
-      `ps aux | grep -E 'tsx.*src/index\\.ts|node.*dist/index\\.js' | grep -v grep`,
-      { encoding: "utf-8", timeout: 5_000 },
-    ).trim();
-
-    if (!out) return;
-
-    for (const line of out.split("\n")) {
-      const parts = line.trim().split(/\s+/);
-      const pid = parseInt(parts[1], 10);
-      if (!pid || pid === myPid) continue;
-      try {
-        process.kill(pid, "SIGTERM");
-        console.log(`[discordclaw] Killed existing instance (PID ${pid})`);
-      } catch {
-        // Process may have already exited
-      }
-    }
-  } catch {
-    // grep returns exit code 1 when no matches — that's fine
-  }
-}
-
 async function main(): Promise<void> {
   console.log("[discordclaw] Starting...");
-
-  // 0. Kill any existing discordclaw instances (only on restart, not manual start)
-  if (process.env.DISCORDCLAW_RESTART === "1") {
-    killExistingInstances();
-    delete process.env.DISCORDCLAW_RESTART;
-  }
 
   // 1. Initialize database
   console.log("[discordclaw] Initializing database...");
@@ -193,9 +161,9 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-  // Wire restart: graceful shutdown → spawn new process → exit
+  // Wire restart: graceful shutdown → exec start.sh (full deploy pipeline)
   setRestartHandler(() => {
-    console.log("[discordclaw] Restart requested...");
+    console.log("[discordclaw] Restart requested — handing off to start.sh...");
     (async () => {
       clearInterval(cleanupInterval);
       cronService.stop();
@@ -205,12 +173,17 @@ async function main(): Promise<void> {
       gateway.close();
       await stopBot(client);
 
-      // Include execArgv so tsx loader hooks (--require, --import) are preserved
-      const child = spawn(
-        process.execPath,
-        [...process.execArgv, ...process.argv.slice(1)],
-        { detached: true, stdio: "inherit", env: { ...process.env, DISCORDCLAW_RESTART: "1" } },
-      );
+      // Resolve the repo root directory (where start.sh lives)
+      const repoRoot = path.resolve(import.meta.dirname ?? ".", "..");
+      const startScript = path.join(repoRoot, "start.sh");
+
+      // Spawn start.sh detached — it will handle git pull, build, and launching a new instance
+      // start.sh also kills any remaining instances before starting fresh
+      const child = spawn("bash", [startScript], {
+        detached: true,
+        stdio: "inherit",
+        cwd: repoRoot,
+      });
       child.unref();
       process.exit(0);
     })();
