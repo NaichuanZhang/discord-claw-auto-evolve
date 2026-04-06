@@ -3,6 +3,7 @@ import { getSoul } from "../soul/soul.js";
 import { memoryTools, handleMemoryTool } from "../memory/tools.js";
 import { discordTools, handleDiscordTool } from "./tools.js";
 import { skillTools, handleSkillTool } from "../skills/tools.js";
+import { dangerousTools, handleDangerousTool } from "./dangerous-tools.js";
 import type { Message, ChannelConfig } from "../db/index.js";
 import { getSkillService } from "../skills/service.js";
 
@@ -61,6 +62,7 @@ const allTools: Anthropic.Messages.Tool[] = [
   ...memoryTools,
   ...discordTools,
   ...skillTools,
+  ...dangerousTools,
 ] as Anthropic.Messages.Tool[];
 
 // ---------------------------------------------------------------------------
@@ -165,6 +167,11 @@ async function executeTool(
   // Skill tools are synchronous
   if (name === "read_skill" || name === "list_skill_files") {
     return handleSkillTool(name, input);
+  }
+
+  // Dangerous tools (bash, read_file, write_file)
+  if (name === "bash" || name === "read_file" || name === "write_file") {
+    return await handleDangerousTool(name, input);
   }
 
   return JSON.stringify({ error: `Unknown tool: ${name}` });

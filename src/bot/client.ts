@@ -4,6 +4,19 @@ import { handleMessage, setMessageClient } from "./messages.js";
 import { handleInteraction, slashCommands } from "./commands.js";
 
 // ---------------------------------------------------------------------------
+// DM deduplication — raw fallback may fire alongside messageCreate
+// ---------------------------------------------------------------------------
+
+const _processedDMIds = new Set<string>();
+
+function markProcessed(id: string): boolean {
+  if (_processedDMIds.has(id)) return false;
+  _processedDMIds.add(id);
+  setTimeout(() => _processedDMIds.delete(id), 60_000);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Client factory
 // ---------------------------------------------------------------------------
 
@@ -16,7 +29,7 @@ export function createClient(): Client {
       GatewayIntentBits.DirectMessages,
       GatewayIntentBits.GuildMessageReactions,
     ],
-    partials: [Partials.Channel, Partials.Message],
+    partials: [Partials.Channel, Partials.Message, Partials.User],
   });
 }
 
@@ -63,10 +76,36 @@ export async function startBot(client: Client): Promise<void> {
       }
     }
 
+    // Mark DMs as processed for dedup with raw fallback
+    if (message.channel.isDMBased()) {
+      markProcessed(message.id);
+    }
+
     try {
       await handleMessage(message);
     } catch (err) {
       console.error("[bot] Unhandled error in messageCreate:", err);
+    }
+  });
+
+  // Fallback: handle DMs via raw gateway events.
+  // discord.js v14 sometimes fails to emit messageCreate for uncached DM channels.
+  client.on("raw", async (packet: any) => {
+    if (packet.t !== "MESSAGE_CREATE") return;
+    if (packet.d.guild_id) return; // Only DMs (no guild)
+    if (packet.d.author?.bot) return;
+    if (!markProcessed(packet.d.id)) return; // Already handled by messageCreate
+
+    console.log(`[bot] DM via raw fallback from ${packet.d.author?.username}`);
+
+    try {
+      const channel = await client.channels.fetch(packet.d.channel_id);
+      if (!channel || !("messages" in channel)) return;
+
+      const msg = await (channel as any).messages.fetch(packet.d.id);
+      await handleMessage(msg);
+    } catch (err) {
+      console.error("[bot] Raw DM fallback error:", err);
     }
   });
 

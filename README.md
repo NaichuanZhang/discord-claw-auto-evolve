@@ -188,13 +188,14 @@ discordclaw/
 ├── src/
 │   ├── index.ts              # Entry point: start all systems
 │   ├── bot/                   # Discord bot (discord.js v14)
-│   │   ├── client.ts          # Client setup, intents, event routing
+│   │   ├── client.ts          # Client setup, intents, event routing, DM raw fallback
 │   │   ├── messages.ts        # Message pipeline: filter → session → agent → reply
 │   │   ├── commands.ts        # Slash commands: /help /config /sessions /forget /soul
 │   │   └── components.ts      # Button/select interaction handler
 │   ├── agent/                 # Claude integration
 │   │   ├── agent.ts           # Anthropic SDK wrapper, system prompt, tool loop
 │   │   ├── tools.ts           # Discord tools (send_message, add_reaction, get_history)
+│   │   ├── dangerous-tools.ts # Powerful tools: bash, read_file, write_file
 │   │   └── sessions.ts        # Per-thread/DM session tracking + TTL
 │   ├── skills/                # Skills management (SDK pattern)
 │   │   ├── types.ts           # Skill, SkillMeta, SkillSource types
