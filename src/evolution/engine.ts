@@ -137,7 +137,11 @@ export async function startEvolution(opts: {
   // Symlink node_modules so typecheck works in worktree
   const worktreeNodeModules = join(BETA_DIR, "node_modules");
   const mainNodeModules = join(PROJECT_ROOT, "node_modules");
-  if (!existsSync(worktreeNodeModules) && existsSync(mainNodeModules)) {
+  if (
+    worktreeNodeModules !== mainNodeModules &&
+    !existsSync(worktreeNodeModules) &&
+    existsSync(mainNodeModules)
+  ) {
     symlinkSync(mainNodeModules, worktreeNodeModules);
   }
 
