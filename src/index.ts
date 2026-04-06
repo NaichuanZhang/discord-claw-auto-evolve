@@ -8,6 +8,7 @@ import { CronService } from "./cron/service.js";
 import { SkillService } from "./skills/service.js";
 import { processAgentTurn } from "./agent/agent.js";
 import { createClient, startBot, stopBot } from "./bot/client.js";
+import { setCommandsSkillService } from "./bot/commands.js";
 import { startGateway } from "./gateway/server.js";
 import { cleanExpiredSessions } from "./agent/sessions.js";
 import { setRestartHandler } from "./restart.js";
@@ -35,6 +36,7 @@ async function main(): Promise<void> {
   console.log("[discordclaw] Loading skills...");
   const skillService = new SkillService();
   await skillService.init();
+  setCommandsSkillService(skillService);
 
   // 4. Start cron service
   console.log("[discordclaw] Starting cron service...");

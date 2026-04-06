@@ -9,6 +9,17 @@ import { getChannelConfig, setChannelConfig } from "../db/index.js";
 import { getSoul } from "../soul/soul.js";
 import { triggerRestart } from "../restart.js";
 import { handleComponentInteraction } from "./components.js";
+import type { SkillService } from "../skills/service.js";
+
+// ---------------------------------------------------------------------------
+// SkillService reference (set from index.ts after init)
+// ---------------------------------------------------------------------------
+
+let skillService: SkillService | null = null;
+
+export function setCommandsSkillService(service: SkillService): void {
+  skillService = service;
+}
 
 // ---------------------------------------------------------------------------
 // Slash command definitions
@@ -64,6 +75,68 @@ export const slashCommands: ApplicationCommandData[] = [
     name: "restart",
     description: "Restart the bot process",
   },
+  {
+    name: "skills",
+    description: "Manage bot skills",
+    options: [
+      {
+        name: "list",
+        description: "List installed skills",
+        type: ApplicationCommandOptionType.Subcommand,
+      },
+      {
+        name: "add-github",
+        description: "Install a skill from a GitHub repository",
+        type: ApplicationCommandOptionType.Subcommand,
+        options: [
+          {
+            name: "url",
+            description: "GitHub repository URL",
+            type: ApplicationCommandOptionType.String,
+            required: true,
+          },
+          {
+            name: "name",
+            description: "Override skill name",
+            type: ApplicationCommandOptionType.String,
+            required: false,
+          },
+        ],
+      },
+      {
+        name: "add-file",
+        description: "Install a skill from an uploaded SKILL.md file",
+        type: ApplicationCommandOptionType.Subcommand,
+        options: [
+          {
+            name: "file",
+            description: "SKILL.md file to upload",
+            type: ApplicationCommandOptionType.Attachment,
+            required: true,
+          },
+          {
+            name: "name",
+            description: "Override skill name",
+            type: ApplicationCommandOptionType.String,
+            required: false,
+          },
+        ],
+      },
+      {
+        name: "remove",
+        description: "Remove an installed skill",
+        type: ApplicationCommandOptionType.Subcommand,
+        options: [
+          {
+            name: "name",
+            description: "Name of the skill to remove",
+            type: ApplicationCommandOptionType.String,
+            required: true,
+          },
+        ],
+      },
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -98,6 +171,9 @@ export async function handleInteraction(interaction: Interaction): Promise<void>
         break;
       case "soul":
         await handleSoul(interaction);
+        break;
+      case "skills":
+        await handleSkills(interaction);
         break;
       case "restart":
         await interaction.reply({ content: "Restarting...", ephemeral: true });
@@ -146,6 +222,10 @@ async function handleHelp(
           "`/sessions` — List recent sessions",
           "`/forget` — Clear the current session",
           "`/soul` — Show the bot personality",
+          "`/skills list` — List installed skills",
+          "`/skills add-github <url>` — Install skill from GitHub",
+          "`/skills add-file <file>` — Install skill from upload",
+          "`/skills remove <name>` — Remove a skill",
           "`/restart` — Restart the bot process",
         ].join("\n"),
       },
@@ -303,6 +383,143 @@ async function handleForget(
     ephemeral: true,
   });
   console.log(`[bot] Session ${session.id} cleared by ${interaction.user.tag}`);
+}
+
+// ---------------------------------------------------------------------------
+// /skills
+// ---------------------------------------------------------------------------
+
+async function handleSkills(
+  interaction: import("discord.js").ChatInputCommandInteraction,
+): Promise<void> {
+  if (!skillService) {
+    await interaction.reply({
+      content: "Skills service is not available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+
+  switch (subcommand) {
+    case "list": {
+      const skills = skillService.list();
+
+      if (skills.length === 0) {
+        await interaction.reply({
+          content: "No skills installed.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const lines = skills.map((s) => {
+        const status = s.enabled ? "On" : "Off";
+        const src =
+          s.source.type === "github"
+            ? "GitHub"
+            : s.source.type === "upload"
+              ? "Upload"
+              : "Local";
+        return `**${s.name}** — ${s.description || "_no description_"} [${status}] (${src})`;
+      });
+
+      const embed = new EmbedBuilder()
+        .setTitle("Installed Skills")
+        .setDescription(lines.join("\n"))
+        .setFooter({ text: `${skills.length} skill(s)` })
+        .setColor(0x5865f2);
+
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+      break;
+    }
+
+    case "add-github": {
+      const url = interaction.options.getString("url", true);
+      const name = interaction.options.getString("name") ?? undefined;
+
+      await interaction.deferReply({ ephemeral: true });
+
+      try {
+        const skill = await skillService.installFromGitHub({ url, name });
+        await interaction.editReply({
+          content: `Skill **${skill.name}** installed from GitHub.`,
+        });
+        console.log(`[bot] Skill installed via /skills add-github: ${skill.name}`);
+      } catch (err) {
+        await interaction.editReply({
+          content: `Failed to install skill: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+      break;
+    }
+
+    case "add-file": {
+      const attachment = interaction.options.getAttachment("file", true);
+      const name = interaction.options.getString("name") ?? undefined;
+
+      await interaction.deferReply({ ephemeral: true });
+
+      try {
+        // Fetch the attachment content
+        const response = await fetch(attachment.url);
+        if (!response.ok) {
+          await interaction.editReply({
+            content: `Failed to download attachment: ${response.statusText}`,
+          });
+          return;
+        }
+        const content = await response.text();
+
+        const skill = await skillService.installFromUpload({ content, name });
+        await interaction.editReply({
+          content: `Skill **${skill.name}** installed from upload.`,
+        });
+        console.log(`[bot] Skill installed via /skills add-file: ${skill.name}`);
+      } catch (err) {
+        await interaction.editReply({
+          content: `Failed to install skill: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+      break;
+    }
+
+    case "remove": {
+      const name = interaction.options.getString("name", true);
+      const skill = skillService.getByName(name);
+
+      if (!skill) {
+        await interaction.reply({
+          content: `Skill **${name}** not found.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const removed = skillService.remove(skill.id);
+      if (!removed) {
+        await interaction.reply({
+          content: `Failed to remove skill **${name}**.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      await interaction.reply({
+        content: `Skill **${name}** removed.`,
+        ephemeral: true,
+      });
+      console.log(`[bot] Skill removed via /skills remove: ${name}`);
+      break;
+    }
+
+    default:
+      await interaction.reply({
+        content: "Unknown skills subcommand.",
+        ephemeral: true,
+      });
+  }
 }
 
 // ---------------------------------------------------------------------------

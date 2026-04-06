@@ -224,6 +224,22 @@ export class SkillService {
     return Array.from(this.skills.values()).find((s) => s.name === name);
   }
 
+  /**
+   * Remove an existing skill by name (metadata + directory), or clean up an
+   * orphan directory that has no metadata. This allows reinstalling a skill
+   * without hitting "already exists" errors.
+   */
+  private removeIfExists(name: string): void {
+    const existing = this.getByName(name);
+    if (existing) {
+      this.remove(existing.id);
+    } else if (this.store.skillDirExists(name)) {
+      // Orphan directory with no metadata — clean it up
+      fs.rmSync(this.store.getSkillDir(name), { recursive: true, force: true });
+      log(`Cleaned up orphan skill directory: ${name}`);
+    }
+  }
+
   async installFromUpload(opts: SkillInstallUpload): Promise<Skill> {
     const { frontmatter } = parseFrontmatter(opts.content);
     const name = SkillStore.sanitizeName(
@@ -231,8 +247,7 @@ export class SkillService {
     );
     if (!SkillStore.validateName(name))
       throw new Error(`Invalid skill name: ${name}`);
-    if (this.store.skillDirExists(name))
-      throw new Error(`Skill "${name}" already exists`);
+    this.removeIfExists(name);
 
     const source: SkillSource = { type: "upload" };
     const meta = this.store.addSkill(name, opts.content, source);
@@ -260,8 +275,7 @@ export class SkillService {
       );
       if (!SkillStore.validateName(name))
         throw new Error(`Invalid skill name: ${name}`);
-      if (this.store.skillDirExists(name))
-        throw new Error(`Skill "${name}" already exists`);
+      this.removeIfExists(name);
 
       const source: SkillSource = { type: "github", url: opts.url };
       meta = this.store.addSkill(name, content, source);
@@ -294,8 +308,7 @@ export class SkillService {
         );
         if (!SkillStore.validateName(name))
           throw new Error(`Invalid skill name: ${name}`);
-        if (this.store.skillDirExists(name))
-          throw new Error(`Skill "${name}" already exists`);
+        this.removeIfExists(name);
 
         const source: SkillSource = { type: "github", url: opts.url };
         // Copy the full directory (scripts, references, etc.)

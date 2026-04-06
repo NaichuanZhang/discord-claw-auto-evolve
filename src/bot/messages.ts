@@ -3,6 +3,7 @@ import { processMessage } from "../agent/agent.js";
 import { resolveSession, getSessionHistory } from "../agent/sessions.js";
 import { getChannelConfig, addMessage } from "../db/index.js";
 import { broadcastLog } from "../gateway/server.js";
+import { isRestarting } from "../restart.js";
 
 // ---------------------------------------------------------------------------
 // Bot client reference (needed for mention checks)
@@ -55,6 +56,9 @@ function splitMessage(text: string): string[] {
 // ---------------------------------------------------------------------------
 
 export async function handleMessage(message: DiscordMessage): Promise<void> {
+  // 0. Filter: ignore messages during restart (prevents double replies)
+  if (isRestarting()) return;
+
   // 1. Filter: skip bot messages
   if (message.author.bot) return;
 
