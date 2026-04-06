@@ -227,6 +227,20 @@ discordclaw/
 
 ## Setup
 
+### Discord Bot
+
+1. Go to https://discord.com/developers/applications
+2. Create a new application, then go to **Bot** tab
+3. Copy the bot token for your `.env`
+4. Under **Privileged Gateway Intents**, enable:
+   - **Message Content Intent** (required)
+   - **Server Members Intent** (recommended)
+5. Go to **OAuth2 > URL Generator**, select scopes: `bot`, `applications.commands`
+6. Select permissions: Send Messages, Read Message History, Add Reactions, Use Slash Commands
+7. Use the generated URL to invite the bot to your server
+
+### Install & Run
+
 ```bash
 # Install
 npm install
@@ -241,6 +255,8 @@ npm run build:ui
 # Run
 npm run dev
 ```
+
+The bot responds to **@mentions** in guild channels and all **DMs**. Dashboard available at `http://localhost:3000`.
 
 ## Environment Variables
 

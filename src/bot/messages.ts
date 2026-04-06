@@ -60,10 +60,19 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
 
   const isDM = message.channel.isDMBased();
 
+  console.log(`[bot] Message from ${message.author.tag} isDM=${isDM} content="${message.content.slice(0, 80)}"`);
+
   // 2. Filter: in guild channels, only respond when mentioned
   if (!isDM) {
     const botUser = botClient?.user;
-    if (!botUser || !message.mentions.has(botUser)) return;
+    if (!botUser) {
+      console.log("[bot] Skipping — botClient.user is null");
+      return;
+    }
+    if (!message.mentions.has(botUser)) {
+      console.log("[bot] Skipping — bot not mentioned");
+      return;
+    }
   }
 
   // 3. Filter: check channel config
