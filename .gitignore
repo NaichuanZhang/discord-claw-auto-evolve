@@ -1,0 +1,6 @@
+node_modules/
+dist/
+data/discordclaw.db
+data/cron/runs/
+.env
+reference/

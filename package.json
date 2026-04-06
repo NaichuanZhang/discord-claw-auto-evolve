@@ -1,0 +1,35 @@
+{
+  "name": "discordclaw",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc && vite build",
+    "build:ui": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "@anthropic-ai/sdk": "^0.39.0",
+    "express": "^4.21.2",
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.7",
+    "ws": "^8.18.0",
+    "croner": "^9.0.0",
+    "nanoid": "^5.0.9"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "tsx": "^4.19.2",
+    "vite": "^6.0.7",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@types/express": "^5.0.0",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/ws": "^8.5.13",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/node": "^22.10.0"
+  }
+}
