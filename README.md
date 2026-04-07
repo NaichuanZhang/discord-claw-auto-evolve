@@ -2,6 +2,113 @@
 
 A stripped-down Discord agent powered by Claude. Simplified fork of [openclaw](https://github.com/openclaw/openclaw) — keeps only Discord, replaces multi-provider AI with Anthropic SDK, adds a web dashboard.
 
+## Features
+
+- 💬 **Conversational AI** — @mention in channels or DM directly. Full conversation history per session.
+- 🧠 **Persistent Memory** — Remembers things across conversations. Markdown files indexed with FTS5 full-text search.
+- 🎭 **Customizable Personality** — Edit `SOUL.md` to change how the bot behaves. Hot-reloads on save.
+- 🔧 **Tool Use** — Runs shell commands, reads/writes files, sends messages across channels, reacts to messages, attaches files.
+- 📦 **Skills** — Drop a `SKILL.md` folder into `data/skills/` and the bot learns new capabilities instantly. Install from GitHub or upload directly.
+- ⏰ **Scheduled Tasks** — Cron jobs that run agent turns on a schedule and deliver results to channels.
+- 🧬 **Self-Evolution** — The bot can modify its own source code via GitHub PRs. Review diffs and merge from Discord.
+- 📊 **Web Dashboard** — React SPA for managing sessions, channels, soul, memory, cron, skills, and evolution history.
+- 🔍 **Web Search** — Install the SearXNG skill for web, news, and package repository search.
+
+## Demo User Flow
+
+```
+You: Hey @Discordclaw, what did we talk about yesterday?
+Bot: [searches memory] We discussed setting up the cron job
+     for daily standups. Want me to finish that?
+
+You: Yeah, set it up for 9am every weekday in #general
+Bot: [creates cron job] Done! I'll post a standup prompt
+     to #general at 9am Mon-Fri. ✅
+
+You: Can you search the web for the latest Node.js release?
+Bot: [reads searxng-search skill, runs search] Node.js v22.5.0
+     was released on April 1, 2026 with...
+
+You: I want you to add a /ping command that shows latency
+Bot: [evolve_start → evolve_write → evolve_propose]
+     PR created: github.com/.../pull/8
+     Want me to show you the diff?
+
+You: Looks good, merge it
+Bot: [evolve_merge] Merged and restarting... ✅
+     /ping command is now live!
+```
+
+### Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all commands and capabilities |
+| `/config` | Toggle bot on/off per channel, set custom instructions |
+| `/sessions` | View and manage conversation sessions |
+| `/clear` | Reset conversation history in current session |
+| `/soul` | View or edit the bot's personality |
+
+## Quick Start
+
+### Discord Bot Setup
+
+1. Go to https://discord.com/developers/applications
+2. Create a new application → **Bot** tab → copy token
+3. Enable **Message Content Intent** and **Server Members Intent**
+4. **OAuth2 > URL Generator** → scopes: `bot`, `applications.commands`
+5. Permissions: Send Messages, Read Message History, Add Reactions, Attach Files, Use Slash Commands
+6. Invite bot to your server with the generated URL
+
+### Install & Run
+
+```bash
+npm install
+cp .env.example .env    # Edit with your tokens
+npm run build:ui        # Build dashboard
+npm run dev             # Development
+./start.sh              # Production (auto-pull, migrations, health check, rollback)
+```
+
+The bot responds to **@mentions** in guild channels and all **DMs**. Dashboard at `http://localhost:3000`.
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DISCORD_BOT_TOKEN` | Yes | Discord bot token |
+| `ANTHROPIC_API_KEY` | Yes* | Anthropic API key |
+| `ANTHROPIC_BASE_URL` | No | Proxy URL (overrides default API endpoint) |
+| `ANTHROPIC_AUTH_TOKEN` | No | Auth token for proxy (used instead of API key) |
+| `ANTHROPIC_MODEL` | No | Model name (default: `bedrock-claude-opus-4-6-1m`) |
+| `GATEWAY_PORT` | No | Dashboard port (default: `3000`) |
+| `SESSION_TTL_HOURS` | No | Session expiry (default: `24`) |
+| `DISCORD_WEBHOOK_URL` | No | Webhook for `start.sh` notifications (deploy, rollback alerts) |
+
+*Either `ANTHROPIC_API_KEY` or `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` required.
+
+## Key Systems
+
+**Soul** — Bot personality defined in `data/SOUL.md`. Hot-reloads on file change. Editable via dashboard.
+
+**Memory** — Markdown files in `data/` indexed with SQLite FTS5. The agent searches memory before answering questions about past context. BM25 ranked results. Queries are sanitized for FTS5 compatibility (special characters like hyphens and colons are handled automatically).
+
+**Sessions** — Per-thread/DM/channel conversation tracking. History loaded as context for each message. Auto-expires after TTL.
+
+**Cron** — Scheduled tasks with three schedule types: one-shot (`at`), interval (`every`), cron expression (`cron`). Jobs can run agent turns and deliver results to Discord channels. Auto-disables after 3 consecutive failures.
+
+**Skills** — Modular capabilities defined as SKILL.md files with YAML frontmatter. Install from GitHub URL or upload directly. Uses SDK progressive loading pattern: only skill metadata (name, description, path) is injected into the system prompt; the agent reads full skill content on demand via `read_skill` tool. Skills can include companion files (scripts, references). Manageable via dashboard.
+
+**Dashboard** — Single-page React app at `http://localhost:3000`. Status, session browser, channel config, soul/memory editor, cron manager, skills manager, evolution history, real-time message logs via WebSocket.
+
+**Agent Loop** — The tool-use loop runs until the model produces a final text response. To prevent infinite loops, consecutive duplicate tool calls (same tool + same arguments) are detected — after 2 identical rounds the agent is forced to produce a final response. Typing indicator refreshes every 8 seconds to stay visible during long tool chains.
+
+**File Attachments** — The agent can send files (PDFs, images, HTML, etc.) to Discord channels via the `send_file` tool. Files up to 25 MB are supported (Discord bot default tier).
+
+**Evolution Engine** — The bot can modify its own source code through GitHub pull requests. All changes are isolated in a git worktree at `beta/`, typechecked, and submitted as PRs via `gh` CLI. The agent has 9 evolution tools: `evolve_start`, `evolve_read`, `evolve_write`, `evolve_bash`, `evolve_propose`, `evolve_suggest`, `evolve_cancel`, `evolve_review`, and `evolve_merge`. Users can review PR diffs and merge directly from Discord — merging automatically triggers a restart to deploy the changes. The bot also records ideas for improvements it can't yet make (`evolve_suggest`). Evolution history is tracked in SQLite and viewable in the dashboard. An idempotent startup script (`start.sh`) handles deploy: `git pull` → run migrations → build → start → health check → auto-rollback on failure.
+
+**Restart** — The bot can restart itself via slash command or automatically after merging an evolution PR. On restart, stale instances are automatically detected and killed to prevent duplicate bots.
+
 ## Architecture
 
 ```mermaid
@@ -254,7 +361,7 @@ discordclaw/
 │   │   └── sessions.ts        # Per-thread/DM session tracking + TTL
 │   ├── skills/                # Skills management (SDK pattern)
 │   │   ├── types.ts           # Skill, SkillMeta, SkillSource types
-│   │   ├── store.ts           # File persistence + metadata JSON
+│   │   ├── store.ts           # Filesystem-based discovery + per-skill .meta.json
 │   │   ├── service.ts         # CRUD, GitHub install, prompt generation, file watcher
 │   │   └── tools.ts           # read_skill + list_skill_files tool definitions
 │   ├── soul/
@@ -294,76 +401,3 @@ discordclaw/
 ├── tsconfig.json
 └── vite.config.ts
 ```
-
-## Setup
-
-### Discord Bot
-
-1. Go to https://discord.com/developers/applications
-2. Create a new application, then go to **Bot** tab
-3. Copy the bot token for your `.env`
-4. Under **Privileged Gateway Intents**, enable:
-   - **Message Content Intent** (required)
-   - **Server Members Intent** (recommended)
-5. Go to **OAuth2 > URL Generator**, select scopes: `bot`, `applications.commands`
-6. Select permissions: Send Messages, Read Message History, Add Reactions, Attach Files, Use Slash Commands
-7. Use the generated URL to invite the bot to your server
-
-### Install & Run
-
-```bash
-# Install
-npm install
-
-# Configure
-cp .env.example .env
-# Edit .env with your Discord bot token and Anthropic API config
-
-# Build dashboard
-npm run build:ui
-
-# Development
-npm run dev
-
-# Production (with auto-pull, migrations, health check, rollback)
-./start.sh
-```
-
-The bot responds to **@mentions** in guild channels and all **DMs**. Dashboard available at `http://localhost:3000`.
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DISCORD_BOT_TOKEN` | Yes | Discord bot token |
-| `ANTHROPIC_API_KEY` | Yes* | Anthropic API key |
-| `ANTHROPIC_BASE_URL` | No | Proxy URL (overrides default API endpoint) |
-| `ANTHROPIC_AUTH_TOKEN` | No | Auth token for proxy (used instead of API key) |
-| `ANTHROPIC_MODEL` | No | Model name (default: `bedrock-claude-opus-4-6-1m`) |
-| `GATEWAY_PORT` | No | Dashboard port (default: `3000`) |
-| `SESSION_TTL_HOURS` | No | Session expiry (default: `24`) |
-| `DISCORD_WEBHOOK_URL` | No | Webhook for `start.sh` notifications (deploy, rollback alerts) |
-
-*Either `ANTHROPIC_API_KEY` or `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` required.
-
-## Key Systems
-
-**Soul** — Bot personality defined in `data/SOUL.md`. Hot-reloads on file change. Editable via dashboard.
-
-**Memory** — Markdown files in `data/` indexed with SQLite FTS5. The agent searches memory before answering questions about past context. BM25 ranked results. Queries are sanitized for FTS5 compatibility (special characters like hyphens and colons are handled automatically).
-
-**Sessions** — Per-thread/DM/channel conversation tracking. History loaded as context for each message. Auto-expires after TTL.
-
-**Cron** — Scheduled tasks with three schedule types: one-shot (`at`), interval (`every`), cron expression (`cron`). Jobs can run agent turns and deliver results to Discord channels. Auto-disables after 3 consecutive failures.
-
-**Skills** — Modular capabilities defined as SKILL.md files with YAML frontmatter. Install from GitHub URL or upload directly. Uses SDK progressive loading pattern: only skill metadata (name, description, path) is injected into the system prompt; the agent reads full skill content on demand via `read_skill` tool. Skills can include companion files (scripts, references). Manageable via dashboard.
-
-**Dashboard** — Single-page React app at `http://localhost:3000`. Status, session browser, channel config, soul/memory editor, cron manager, skills manager, evolution history, real-time message logs via WebSocket.
-
-**Agent Loop** — The tool-use loop runs until the model produces a final text response. To prevent infinite loops, consecutive duplicate tool calls (same tool + same arguments) are detected — after 2 identical rounds the agent is forced to produce a final response. Typing indicator refreshes every 8 seconds to stay visible during long tool chains.
-
-**File Attachments** — The agent can send files (PDFs, images, HTML, etc.) to Discord channels via the `send_file` tool. Files up to 25 MB are supported (Discord bot default tier).
-
-**Evolution Engine** — The bot can modify its own source code through GitHub pull requests. All changes are isolated in a git worktree at `beta/`, typechecked, and submitted as PRs via `gh` CLI. The agent has 9 evolution tools: `evolve_start`, `evolve_read`, `evolve_write`, `evolve_bash`, `evolve_propose`, `evolve_suggest`, `evolve_cancel`, `evolve_review`, and `evolve_merge`. Users can review PR diffs and merge directly from Discord — merging automatically triggers a restart to deploy the changes. The bot also records ideas for improvements it can't yet make (`evolve_suggest`). Evolution history is tracked in SQLite and viewable in the dashboard. An idempotent startup script (`start.sh`) handles deploy: `git pull` → run migrations → build → start → health check → auto-rollback on failure.
-
-**Restart** — The bot can restart itself via slash command or automatically after merging an evolution PR. On restart, stale instances are automatically detected and killed to prevent duplicate bots.
