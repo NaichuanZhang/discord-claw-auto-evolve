@@ -35,6 +35,21 @@ function getModel(override?: string): string {
   return cleanModelName(raw);
 }
 
+/** Get the current date/time as a human-readable string for the system prompt. */
+function getCurrentTimestamp(): string {
+  const now = new Date();
+  // e.g. "Saturday, April 6, 2026, 3:45 PM PDT"
+  return now.toLocaleString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 const BASE_INSTRUCTIONS = `You are a Discord assistant. You participate in conversations, answer questions, and help users. You can use tools to interact with Discord channels and to recall information from memory.
 
 Guidelines:
@@ -132,9 +147,10 @@ function buildSystemPrompt(opts: {
     );
   }
 
-  // 5. Context info
+  // 5. Context info (including current date/time)
   const ctx = opts.context;
   const contextLines = [`## Current Context`];
+  contextLines.push(`- Current time: ${getCurrentTimestamp()}`);
   if (ctx.guildName) {
     contextLines.push(`- Server: ${ctx.guildName}`);
   }
@@ -375,6 +391,9 @@ export async function processAgentTurn(opts: {
     systemParts.push(skillsPrompt);
   }
   systemParts.push(MEMORY_RECALL_INSTRUCTIONS);
+
+  // Add current time context for cron jobs too
+  systemParts.push(`## Current Context\n- Current time: ${getCurrentTimestamp()}`);
 
   const systemPrompt = systemParts.join("\n\n");
 
