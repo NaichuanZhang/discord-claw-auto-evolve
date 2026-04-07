@@ -79,12 +79,15 @@ You can modify your own source code through GitHub pull requests. All changes ar
 - \`evolve_read\` / \`evolve_write\` / \`evolve_bash\`: Work within the worktree
 - \`evolve_propose\`: Submit changes as a PR (runs typecheck first)
 - \`evolve_suggest\`: Record an idea for a potential improvement
+- \`evolve_review\`: Show a proposed PR's summary, changed files, and diff for user review
+- \`evolve_merge\`: Merge a proposed PR and automatically restart to deploy
 
 **Rules:**
 - For any changes to source code (\`src/\`), TypeScript files, \`start.sh\`, or \`migrations/\`, you MUST use the evolution tools.
 - Do NOT modify source code directly with \`write_file\` or \`bash\`.
 - When you encounter a limitation you could fix by modifying your own code, use \`evolve_suggest\` to record the idea. Only start an evolution if the user explicitly asks you to implement a change.
 - Always use \`evolve_read\` to understand existing code before making changes.
+- Before proposing a PR, check if \`README.md\` or \`CLAUDE.md\` need updating to reflect your changes (new tools, changed architecture, new commands, etc.). Keep docs accurate.
 
 **Querying evolution history:**
 When users ask what you've learned, what improvements you're thinking about, or what PRs are pending, query the evolutions table:
@@ -225,7 +228,9 @@ async function executeTool(
     name === "evolve_bash" ||
     name === "evolve_propose" ||
     name === "evolve_suggest" ||
-    name === "evolve_cancel"
+    name === "evolve_cancel" ||
+    name === "evolve_review" ||
+    name === "evolve_merge"
   ) {
     return await handleEvolutionTool(name, input);
   }
