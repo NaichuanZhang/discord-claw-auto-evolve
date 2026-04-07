@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/discordclaw-logo.svg" width="256" alt="Discordclaw">
+</p>
+
 # Discordclaw
 
 A stripped-down Discord agent powered by Claude. Simplified fork of [openclaw](https://github.com/openclaw/openclaw) — keeps only Discord, replaces multi-provider AI with Anthropic SDK, adds a web dashboard.
