@@ -18,6 +18,26 @@ const client = new Anthropic({
 });
 
 // ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface AgentImage {
+  /** URL (web) or absolute file path (local) */
+  source: string;
+  /** Whether this is a local file path or a web URL */
+  type: "url" | "file";
+  /** Alt text from markdown */
+  alt?: string;
+}
+
+export interface AgentResponse {
+  /** The text portion of the response (with image markdown stripped) */
+  text: string;
+  /** Images extracted from the response */
+  images: AgentImage[];
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -239,6 +259,49 @@ async function executeTool(
 }
 
 // ---------------------------------------------------------------------------
+// Image extraction from markdown
+// ---------------------------------------------------------------------------
+
+/** Common image file extensions */
+const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i;
+
+/** Match markdown image syntax: ![alt](source) */
+const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
+
+/**
+ * Extract images from response text and return cleaned text + image list.
+ * Recognizes:
+ * - Markdown images: ![alt](url or filepath)
+ * - Web URLs are classified as "url"
+ * - Absolute file paths are classified as "file"
+ */
+export function extractImages(text: string): { cleanText: string; images: AgentImage[] } {
+  const images: AgentImage[] = [];
+
+  const cleanText = text.replace(MARKDOWN_IMAGE_RE, (match, alt: string, src: string) => {
+    const trimmedSrc = src.trim();
+
+    if (trimmedSrc.startsWith("http://") || trimmedSrc.startsWith("https://")) {
+      images.push({ source: trimmedSrc, type: "url", alt: alt || undefined });
+      return ""; // Strip from text
+    }
+
+    if (trimmedSrc.startsWith("/") && IMAGE_EXTENSIONS.test(trimmedSrc)) {
+      images.push({ source: trimmedSrc, type: "file", alt: alt || undefined });
+      return ""; // Strip from text
+    }
+
+    // Not a recognized image — leave the markdown in place
+    return match;
+  });
+
+  // Clean up extra blank lines left behind by stripping images
+  const finalText = cleanText.replace(/\n{3,}/g, "\n\n").trim();
+
+  return { cleanText: finalText, images };
+}
+
+// ---------------------------------------------------------------------------
 // processMessage — main conversation entry point
 // ---------------------------------------------------------------------------
 
@@ -253,7 +316,7 @@ export async function processMessage(opts: {
   };
   history: Message[];
   channelConfig?: ChannelConfig;
-}): Promise<string> {
+}): Promise<AgentResponse> {
   const systemPrompt = buildSystemPrompt({
     context: opts.context,
     channelConfig: opts.channelConfig,
@@ -370,12 +433,18 @@ export async function processMessage(opts: {
     messages.push({ role: "user", content: toolResults });
   }
 
-  const finalText = collectedText.join("\n").trim();
-  if (!finalText) {
-    return "I processed your request but had nothing to say.";
+  const rawText = collectedText.join("\n").trim();
+  if (!rawText) {
+    return { text: "I processed your request but had nothing to say.", images: [] };
   }
 
-  return finalText;
+  // Extract images from the response text
+  const { cleanText, images } = extractImages(rawText);
+
+  return {
+    text: cleanText || rawText, // Fall back to raw if extraction stripped everything
+    images,
+  };
 }
 
 // ---------------------------------------------------------------------------

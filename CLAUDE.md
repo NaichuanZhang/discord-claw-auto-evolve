@@ -18,7 +18,7 @@ The dashboard SPA lives at `src/gateway/ui/` and builds to `dist/ui/`. Vite dev 
 
 This is a Discord bot that uses Claude as its AI backend. The system has seven major subsystems that initialize sequentially in `src/index.ts`:
 
-**Bot → Agent → Claude API pipeline**: Discord messages flow through `bot/messages.ts` (filter, session resolve, context build) → `agent/agent.ts` (system prompt assembly, tool loop with duplicate detection) → Anthropic SDK. The agent has tools for memory search, Discord actions, skill reading, dangerous ops (bash, file I/O), and self-evolution (worktree + PR).
+**Bot → Agent → Claude API pipeline**: Discord messages flow through `bot/messages.ts` (filter, session resolve, context build) → `agent/agent.ts` (system prompt assembly, tool loop with duplicate detection) → Anthropic SDK. The agent returns an `AgentResponse` with text and extracted images (from markdown `![](url)` syntax). `messages.ts` renders images as Discord embeds (URLs) or attachments (local files). The agent has tools for memory search, Discord actions, skill reading, dangerous ops (bash, file I/O), and self-evolution (worktree + PR).
 
 **Session management**: Sessions are keyed by thread/channel/user/DM combination. `agent/sessions.ts` resolves the correct session and loads history from SQLite. Sessions auto-expire based on `SESSION_TTL_HOURS`.
 

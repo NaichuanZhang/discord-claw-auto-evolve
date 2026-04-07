@@ -1,5 +1,13 @@
-import { type Client, type Message as DiscordMessage } from "discord.js";
+import {
+  type Client,
+  type Message as DiscordMessage,
+  EmbedBuilder,
+  AttachmentBuilder,
+} from "discord.js";
+import { existsSync } from "fs";
+import { basename } from "path";
 import { processMessage } from "../agent/agent.js";
+import type { AgentResponse, AgentImage } from "../agent/agent.js";
 import { resolveSession, getSessionHistory } from "../agent/sessions.js";
 import { getChannelConfig, addMessage } from "../db/index.js";
 import { broadcastLog } from "../gateway/server.js";
@@ -49,6 +57,41 @@ function splitMessage(text: string): string[] {
   }
 
   return chunks;
+}
+
+// ---------------------------------------------------------------------------
+// Image handling helpers
+// ---------------------------------------------------------------------------
+
+/** Discord supports up to 10 embeds per message. */
+const MAX_EMBEDS_PER_MESSAGE = 10;
+
+/**
+ * Build Discord embeds for URL-based images.
+ * Each image gets its own embed so Discord renders them all.
+ */
+function buildImageEmbeds(images: AgentImage[]): EmbedBuilder[] {
+  const urlImages = images.filter((img) => img.type === "url");
+  return urlImages.slice(0, MAX_EMBEDS_PER_MESSAGE).map((img) => {
+    const embed = new EmbedBuilder().setImage(img.source);
+    if (img.alt) {
+      embed.setDescription(img.alt);
+    }
+    return embed;
+  });
+}
+
+/**
+ * Build Discord attachment builders for local file images.
+ */
+function buildImageAttachments(images: AgentImage[]): AttachmentBuilder[] {
+  const fileImages = images.filter(
+    (img) => img.type === "file" && existsSync(img.source),
+  );
+  return fileImages.map((img) => {
+    const name = basename(img.source);
+    return new AttachmentBuilder(img.source, { name, description: img.alt });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -129,8 +172,8 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
   startTyping();
 
   try {
-    // 7. Agent dispatch
-    const response = await processMessage({
+    // 7. Agent dispatch — now returns AgentResponse with text + images
+    const response: AgentResponse = await processMessage({
       message: cleanContent,
       sessionId: session.id,
       context: {
@@ -145,7 +188,12 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
 
     stopTyping();
 
-    // 8. Log both messages to DB
+    // 8. Log both messages to DB (store the full text with images for history)
+    const fullResponseText = response.text +
+      (response.images.length > 0
+        ? "\n" + response.images.map((img) => `![${img.alt || ""}](${img.source})`).join("\n")
+        : "");
+
     addMessage({
       sessionId: session.id,
       role: "user",
@@ -156,7 +204,7 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
     addMessage({
       sessionId: session.id,
       role: "assistant",
-      content: response,
+      content: fullResponseText,
     });
 
     // 8b. Broadcast to WebSocket log viewers
@@ -173,17 +221,34 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
       type: "message",
       sessionId: session.id,
       role: "assistant",
-      content: response,
+      content: fullResponseText,
       channel: channelName,
       timestamp: Date.now(),
     });
 
-    // 9. Reply — split if necessary
-    const chunks = splitMessage(response);
+    // 9. Build image embeds and attachments
+    const embeds = buildImageEmbeds(response.images);
+    const files = buildImageAttachments(response.images);
+    const hasMedia = embeds.length > 0 || files.length > 0;
+
+    // 10. Reply — split text if necessary, attach images to the first message
+    const chunks = splitMessage(response.text);
 
     for (let i = 0; i < chunks.length; i++) {
       if (i === 0) {
-        await message.reply(chunks[i]);
+        // First message: include text + any images
+        const replyPayload: {
+          content: string;
+          embeds?: EmbedBuilder[];
+          files?: AttachmentBuilder[];
+        } = { content: chunks[i] };
+
+        if (hasMedia) {
+          if (embeds.length > 0) replyPayload.embeds = embeds;
+          if (files.length > 0) replyPayload.files = files;
+        }
+
+        await message.reply(replyPayload);
       } else {
         if ("send" in message.channel) {
           await message.channel.send(chunks[i]);
@@ -191,8 +256,20 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
       }
     }
 
+    // Edge case: if there's no text but there are images, send images alone
+    if (!response.text && hasMedia) {
+      const replyPayload: {
+        embeds?: EmbedBuilder[];
+        files?: AttachmentBuilder[];
+      } = {};
+      if (embeds.length > 0) replyPayload.embeds = embeds;
+      if (files.length > 0) replyPayload.files = files;
+      await message.reply(replyPayload);
+    }
+
+    const imageCount = response.images.length;
     console.log(
-      `[bot] Replied to ${message.author.tag} in ${channelName} (session ${session.id})`,
+      `[bot] Replied to ${message.author.tag} in ${channelName} (session ${session.id})${imageCount > 0 ? ` with ${imageCount} image(s)` : ""}`,
     );
   } catch (err) {
     stopTyping();
