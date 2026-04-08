@@ -11,6 +11,7 @@ import { processMessage } from "../agent/agent.js";
 import type { AgentResponse, AgentImage } from "../agent/agent.js";
 import { resolveSession, getSessionHistory } from "../agent/sessions.js";
 import { getChannelConfig, addMessage } from "../db/index.js";
+import type { TokenUsage } from "../db/index.js";
 import { broadcastLog } from "../gateway/server.js";
 import { isRestarting } from "../restart.js";
 import {
@@ -98,6 +99,49 @@ function buildImageAttachments(images: AgentImage[]): AttachmentBuilder[] {
     const name = basename(img.source);
     return new AttachmentBuilder(img.source, { name, description: img.alt });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Token usage formatting
+// ---------------------------------------------------------------------------
+
+/** Per-million-token pricing */
+const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheCreate: number }> = {
+  default: { input: 3.0, output: 15.0, cacheRead: 0.30, cacheCreate: 3.75 },
+};
+
+function getModelPricing(model: string) {
+  // Could add model-specific pricing here in the future
+  void model;
+  return PRICING.default;
+}
+
+/** Shorten model name: strip "bedrock-" prefix and date suffixes like "-20250514" or "-6-1m" */
+function shortModelName(model: string): string {
+  return model
+    .replace(/^bedrock-/, "")
+    .replace(/-\d{8}$/, "")
+    .replace(/-\d+-\d+[a-z]?$/, "");
+}
+
+/** Format token count: 1234 → "1.2k", 123456 → "123.5k" */
+function fmtTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
+/** Build a single-line usage string for appending to the message */
+function formatUsageLine(usage: TokenUsage): string {
+  const pricing = getModelPricing(usage.model);
+  const cost =
+    (usage.inputTokens * pricing.input +
+      usage.outputTokens * pricing.output +
+      usage.cacheReadTokens * pricing.cacheRead +
+      usage.cacheCreationTokens * pricing.cacheCreate) /
+    1e6;
+
+  const model = shortModelName(usage.model);
+  return `-# 📊 ${model} · ${fmtTokens(usage.inputTokens)} in / ${fmtTokens(usage.outputTokens)} out · $${cost.toFixed(4)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -349,8 +393,15 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
     const files = buildImageAttachments(response.images);
     const hasMedia = embeds.length > 0 || files.length > 0;
 
+    // 9b. Append usage line to the display text
+    let displayText = response.text;
+    if (response.usage) {
+      const usageLine = formatUsageLine(response.usage);
+      displayText = displayText ? `${displayText}\n${usageLine}` : usageLine;
+    }
+
     // 10. Reply — split text if necessary, attach images to the first message
-    const chunks = splitMessage(response.text);
+    const chunks = splitMessage(displayText);
 
     for (let i = 0; i < chunks.length; i++) {
       if (i === 0) {
@@ -375,7 +426,7 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
     }
 
     // Edge case: if there's no text but there are images, send images alone
-    if (!response.text && hasMedia) {
+    if (!displayText && hasMedia) {
       const replyPayload: {
         embeds?: EmbedBuilder[];
         files?: AttachmentBuilder[];
