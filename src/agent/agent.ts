@@ -6,6 +6,7 @@ import { skillTools, handleSkillTool } from "../skills/tools.js";
 import { dangerousTools, handleDangerousTool } from "./dangerous-tools.js";
 import { evolutionTools, handleEvolutionTool, setEvolutionContext } from "../evolution/tools.js";
 import type { Message, ChannelConfig, TokenUsage } from "../db/index.js";
+import { getRecentMessages, getConversationStats } from "../db/index.js";
 import { recordSignal } from "../reflection/signals.js";
 import { getSkillService } from "../skills/service.js";
 
@@ -178,15 +179,119 @@ When users ask what you've learned, what improvements you're thinking about, or 
 - Ideas (local only): \`bash\` → \`sqlite3 data/discordclaw.db "SELECT id, trigger_message FROM evolutions WHERE status='idea' ORDER BY created_at DESC LIMIT 10"\``;
 
 // ---------------------------------------------------------------------------
+// Conversation history tool (for cron/reflection access to DB history)
+// ---------------------------------------------------------------------------
+
+const conversationHistoryTools: Anthropic.Messages.Tool[] = [
+  {
+    name: "get_conversation_history",
+    description:
+      "Get recent conversation messages from the database, spanning across all sessions (including archived ones). " +
+      "Use this to review what conversations happened recently. Returns messages newest-first.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        hours: {
+          type: "number",
+          description: "How many hours back to look (default: 24)",
+        },
+        limit: {
+          type: "number",
+          description: "Max messages to return (default: 100, max: 500)",
+        },
+        role: {
+          type: "string",
+          description: "Filter by role: 'user' or 'assistant' (default: both)",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_conversation_stats",
+    description:
+      "Get statistics about recent conversations: total sessions, messages, unique users, etc.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        hours: {
+          type: "number",
+          description: "How many hours back to look (default: 24)",
+        },
+      },
+      required: [],
+    },
+  },
+];
+
+function handleConversationHistoryTool(
+  name: string,
+  input: Record<string, unknown>,
+): string {
+  try {
+    switch (name) {
+      case "get_conversation_history": {
+        const hours = (input.hours as number) || 24;
+        const limit = Math.min((input.limit as number) || 100, 500);
+        const role = input.role as string | undefined;
+
+        const messages = getRecentMessages({
+          sincMs: hours * 60 * 60 * 1000,
+          limit,
+          role,
+        });
+
+        const formatted = messages.map((m) => ({
+          role: m.role,
+          content: m.content.slice(0, 500), // Truncate long messages
+          channel: m.discordKey || m.channelId || "unknown",
+          userId: m.userId,
+          timestamp: new Date(m.createdAt).toISOString(),
+          hasMore: m.content.length > 500,
+        }));
+
+        return JSON.stringify({
+          count: formatted.length,
+          hours_back: hours,
+          messages: formatted,
+        });
+      }
+
+      case "get_conversation_stats": {
+        const hours = (input.hours as number) || 24;
+        const stats = getConversationStats(hours * 60 * 60 * 1000);
+        return JSON.stringify(stats);
+      }
+
+      default:
+        return JSON.stringify({ error: `Unknown tool: ${name}` });
+    }
+  } catch (err) {
+    return JSON.stringify({
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // All tools combined
 // ---------------------------------------------------------------------------
 
 const allTools: Anthropic.Messages.Tool[] = [
+  ...conversationHistoryTools,
   ...memoryTools,
   ...discordTools,
   ...skillTools,
   ...dangerousTools,
   ...evolutionTools,
+] as Anthropic.Messages.Tool[];
+
+/** Tools available in cron/agent-turn context (memory + discord + conversation history) */
+const cronTools: Anthropic.Messages.Tool[] = [
+  ...memoryTools,
+  ...discordTools,
+  ...conversationHistoryTools,
+  ...dangerousTools,
 ] as Anthropic.Messages.Tool[];
 
 // ---------------------------------------------------------------------------
@@ -314,6 +419,10 @@ async function executeTool(
     name === "evolve_merge"
   ) {
     result = await handleEvolutionTool(name, input);
+  }
+  // Conversation history tools
+  else if (name === "get_conversation_history" || name === "get_conversation_stats") {
+    result = handleConversationHistoryTool(name, input);
   } else {
     result = JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -556,7 +665,7 @@ export async function processMessage(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// processAgentTurn — simple single-turn for cron jobs
+// processAgentTurn — agentic turn for cron jobs with full tool access
 // ---------------------------------------------------------------------------
 
 export async function processAgentTurn(opts: {
@@ -579,9 +688,6 @@ export async function processAgentTurn(opts: {
 
   const systemPrompt = systemParts.join("\n\n");
 
-  // Only memory tools are available in cron context (no Discord tools)
-  const tools = memoryTools as Anthropic.Messages.Tool[];
-
   const messages: Anthropic.Messages.MessageParam[] = [
     { role: "user", content: opts.message },
   ];
@@ -599,7 +705,7 @@ export async function processAgentTurn(opts: {
       max_tokens: MAX_TOKENS,
       system: systemPrompt,
       messages,
-      tools,
+      tools: cronTools,
     });
 
     for (const block of response.content) {
@@ -662,10 +768,49 @@ export async function processAgentTurn(opts: {
     for (const block of response.content) {
       if (block.type === "tool_use") {
         console.log(`[agent] Cron tool call: ${block.name}`, JSON.stringify(block.input));
-        const result = handleMemoryTool(
-          block.name,
-          block.input as Record<string, unknown>,
-        );
+
+        let result: string;
+
+        // Route to the appropriate handler
+        if (block.name === "memory_search" || block.name === "memory_get") {
+          result = handleMemoryTool(
+            block.name,
+            block.input as Record<string, unknown>,
+          );
+        } else if (
+          block.name === "send_message" ||
+          block.name === "send_file" ||
+          block.name === "add_reaction" ||
+          block.name === "get_channel_history"
+        ) {
+          result = await handleDiscordTool(
+            block.name,
+            block.input as Record<string, unknown>,
+          );
+        } else if (
+          block.name === "get_conversation_history" ||
+          block.name === "get_conversation_stats"
+        ) {
+          result = handleConversationHistoryTool(
+            block.name,
+            block.input as Record<string, unknown>,
+          );
+        } else if (
+          block.name === "bash" ||
+          block.name === "read_file" ||
+          block.name === "write_file"
+        ) {
+          result = await handleDangerousTool(
+            block.name,
+            block.input as Record<string, unknown>,
+          );
+        } else {
+          result = handleMemoryTool(
+            block.name,
+            block.input as Record<string, unknown>,
+          );
+        }
+
         toolResults.push({
           type: "tool_result",
           tool_use_id: block.id,

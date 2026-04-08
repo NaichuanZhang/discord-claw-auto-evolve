@@ -6,6 +6,7 @@ import {
   updateSessionActivity,
   getSessionMessages,
   deleteSession,
+  pruneMessageHistory,
   type Session,
   type Message,
 } from "../db/index.js";
@@ -16,6 +17,9 @@ import {
 
 const DEFAULT_TTL_HOURS = 24;
 const DEFAULT_MAX_MESSAGES = 50;
+
+/** Archived messages are kept for 30 days by default */
+const MESSAGE_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 function getSessionTtlMs(): number {
   const hours = Number(process.env.SESSION_TTL_HOURS) || DEFAULT_TTL_HOURS;
@@ -67,6 +71,7 @@ export function resolveSession(opts: {
   if (existing) {
     if (isExpired(existing)) {
       console.log(`[sessions] Session ${existing.id} expired (key=${discordKey}), replacing`);
+      // deleteSession now archives messages to message_history before removing
       deleteSession(existing.id);
     } else {
       updateSessionActivity(existing.id);
@@ -97,7 +102,7 @@ export function getSessionHistory(
 }
 
 /**
- * Delete a session and all its messages.
+ * Delete a session and archive its messages.
  */
 export function clearSession(sessionId: string): void {
   console.log(`[sessions] Clearing session ${sessionId}`);
@@ -157,6 +162,8 @@ export function listSessions(opts?: {
 
 /**
  * Delete all sessions that have been inactive longer than the TTL.
+ * Messages are archived to message_history before deletion.
+ * Also prunes very old archived messages (30 days).
  * Returns the number of sessions deleted.
  */
 export function cleanExpiredSessions(): number {
@@ -167,16 +174,27 @@ export function cleanExpiredSessions(): number {
     .prepare("SELECT id FROM sessions WHERE last_active < ?")
     .all(cutoff) as { id: string }[];
 
-  if (expired.length === 0) return 0;
-
-  const cleanup = db.transaction(() => {
-    for (const { id } of expired) {
-      db.prepare("DELETE FROM messages WHERE session_id = ?").run(id);
-      db.prepare("DELETE FROM sessions WHERE id = ?").run(id);
+  if (expired.length === 0) {
+    // Still prune old archived messages periodically
+    const pruned = pruneMessageHistory(MESSAGE_HISTORY_RETENTION_MS);
+    if (pruned > 0) {
+      console.log(`[sessions] Pruned ${pruned} old archived message(s)`);
     }
-  });
-  cleanup();
+    return 0;
+  }
 
-  console.log(`[sessions] Cleaned ${expired.length} expired session(s)`);
+  // deleteSession archives messages before deleting
+  for (const { id } of expired) {
+    deleteSession(id);
+  }
+
+  console.log(`[sessions] Cleaned ${expired.length} expired session(s) (messages archived)`);
+
+  // Also prune very old archived messages
+  const pruned = pruneMessageHistory(MESSAGE_HISTORY_RETENTION_MS);
+  if (pruned > 0) {
+    console.log(`[sessions] Pruned ${pruned} old archived message(s)`);
+  }
+
   return expired.length;
 }
