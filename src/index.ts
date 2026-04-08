@@ -15,6 +15,12 @@ import { cleanExpiredSessions } from "./agent/sessions.js";
 import { setRestartHandler } from "./restart.js";
 import { syncDeployedEvolutions, setEvolutionSendToDiscord, checkGhCli } from "./evolution/engine.js";
 import { setHealthDiscordClient, setServicesReady } from "./evolution/health.js";
+import {
+  startReflectionDaemon,
+  stopReflectionDaemon,
+  setReflectionSendToDiscord,
+  setReflectionChannelId,
+} from "./reflection/daemon.js";
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -81,6 +87,20 @@ async function main(): Promise<void> {
     await channel.send(text);
   });
 
+  // Wire reflection daemon → Discord delivery
+  const reflectionChannelId = process.env.REFLECTION_CHANNEL_ID;
+  if (reflectionChannelId) {
+    setReflectionChannelId(reflectionChannelId);
+    setReflectionSendToDiscord(async (channelId, text) => {
+      const channel: any = await client.channels.fetch(channelId);
+      if (!channel?.send) {
+        console.error(`[reflection] Cannot send to channel ${channelId}`);
+        return;
+      }
+      await channel.send(text);
+    });
+  }
+
   // Set health check references
   setHealthDiscordClient(client);
 
@@ -118,7 +138,11 @@ async function main(): Promise<void> {
     }
   }, SESSION_CLEANUP_INTERVAL);
 
-  // 8. Log startup summary
+  // 8. Start reflection daemon (self-evolution feedback loop)
+  console.log("[discordclaw] Starting reflection daemon...");
+  startReflectionDaemon();
+
+  // 9. Log startup summary
   const guilds = client.guilds.cache;
   const cronJobs = cronService.list();
   console.log("[discordclaw] ========================================");
@@ -127,6 +151,7 @@ async function main(): Promise<void> {
   console.log(`[discordclaw] Cron jobs: ${cronJobs.length}`);
   console.log(`[discordclaw] Skills: ${skillService.list().length}`);
   console.log(`[discordclaw] gh CLI: ${ghAvailable ? "ready" : "NOT AVAILABLE"}`);
+  console.log(`[discordclaw] Reflection: ${reflectionChannelId ? `→ #${reflectionChannelId}` : "no channel (ideas only)"}`);
   console.log(`[discordclaw] Gateway: http://localhost:${port}`);
   console.log("[discordclaw] ========================================");
 
@@ -139,6 +164,9 @@ async function main(): Promise<void> {
 
     // Stop periodic cleanup
     clearInterval(cleanupInterval);
+
+    // Stop reflection daemon
+    stopReflectionDaemon();
 
     // Stop cron first (prevents new jobs from firing)
     cronService.stop();
@@ -166,6 +194,7 @@ async function main(): Promise<void> {
     console.log("[discordclaw] Restart requested — handing off to start.sh...");
     (async () => {
       clearInterval(cleanupInterval);
+      stopReflectionDaemon();
       cronService.stop();
       stopSoulWatcher();
       stopMemoryWatcher();
