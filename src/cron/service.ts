@@ -24,6 +24,9 @@ export class CronService {
   private executeAgentTurn:
     | ((message: string, model?: string) => Promise<string>)
     | null = null;
+  private executeReflection:
+    | (() => Promise<{ outcome: string; proposal?: string; evolutionId?: string; error?: string }>)
+    | null = null;
   private adminDmChannelId: string | null = null;
 
   constructor() {
@@ -81,6 +84,13 @@ export class CronService {
   ): void {
     this.executeAgentTurn = fn;
     log("Agent turn callback registered");
+  }
+
+  setExecuteReflection(
+    fn: () => Promise<{ outcome: string; proposal?: string; evolutionId?: string; error?: string }>,
+  ): void {
+    this.executeReflection = fn;
+    log("Reflection callback registered");
   }
 
   /**
@@ -286,6 +296,22 @@ export class CronService {
           job.payload.message,
           job.payload.model,
         );
+      } else if (job.payload.kind === "reflection") {
+        if (!this.executeReflection) {
+          throw new Error("Reflection callback not registered");
+        }
+        log(`[reflection] ${job.name}: triggering self-reflection`);
+        const reflectionResult = await this.executeReflection();
+        result = `Reflection completed: ${reflectionResult.outcome}`;
+        if (reflectionResult.proposal) {
+          result += `\n${reflectionResult.proposal}`;
+        }
+        if (reflectionResult.error) {
+          result += `\nError: ${reflectionResult.error}`;
+        }
+        // Reflection daemon handles its own Discord notification,
+        // so we only deliver via cron if there's no reflection channel configured
+        // and the job has explicit delivery set.
       }
 
       // Deliver result to Discord — use configured delivery or fall back to admin DM

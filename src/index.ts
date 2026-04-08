@@ -20,6 +20,7 @@ import {
   stopReflectionDaemon,
   setReflectionSendToDiscord,
   setReflectionChannelId,
+  triggerReflection,
 } from "./reflection/daemon.js";
 
 // Admin user ID for DM fallback delivery
@@ -62,6 +63,7 @@ async function main(): Promise<void> {
   cronService.setExecuteAgentTurn(
     (message, model) => processAgentTurn({ message, model }),
   );
+  cronService.setExecuteReflection(() => triggerReflection());
   cronService.start();
   setCommandsCronService(cronService);
 

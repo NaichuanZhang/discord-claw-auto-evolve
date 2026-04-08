@@ -5,7 +5,8 @@ export type CronSchedule =
 
 export type CronPayload =
   | { kind: "systemEvent"; text: string }
-  | { kind: "agentTurn"; message: string; model?: string };
+  | { kind: "agentTurn"; message: string; model?: string }
+  | { kind: "reflection" };
 
 export type CronDelivery = {
   channelId: string;
