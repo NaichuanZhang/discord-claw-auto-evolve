@@ -33,6 +33,13 @@ export interface Message {
   cacheReadTokens?: number;
 }
 
+/** A message with session context for cross-session queries */
+export interface MessageWithContext extends Message {
+  discordKey?: string;
+  channelId?: string;
+  userId?: string;
+}
+
 export interface TokenUsage {
   model: string;
   inputTokens: number;
@@ -172,10 +179,46 @@ export function initDb(): void {
     );
   `);
 
+  // ---------------------------------------------------------------------------
+  // Migrations — add message_history table for archived messages
+  // ---------------------------------------------------------------------------
+
+  // Check if message_history table exists
+  const hasMessageHistory = d.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='message_history'"
+  ).get();
+
+  if (!hasMessageHistory) {
+    d.exec(`
+      CREATE TABLE message_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        discord_key TEXT,
+        channel_id TEXT,
+        user_id TEXT,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        discord_message_id TEXT,
+        created_at INTEGER NOT NULL,
+        model TEXT,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cache_creation_tokens INTEGER,
+        cache_read_tokens INTEGER,
+        archived_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+      );
+
+      CREATE INDEX idx_message_history_created_at ON message_history(created_at);
+      CREATE INDEX idx_message_history_user_id ON message_history(user_id);
+      CREATE INDEX idx_message_history_channel_id ON message_history(channel_id);
+    `);
+  }
+
   // Create indexes (idempotent — CREATE INDEX IF NOT EXISTS)
   d.exec(`
     CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(type);
     CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at);
+    CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
   `);
 }
 
@@ -209,6 +252,15 @@ function rowToMessage(row: Record<string, unknown>): Message {
     outputTokens: (row.output_tokens as number) ?? undefined,
     cacheCreationTokens: (row.cache_creation_tokens as number) ?? undefined,
     cacheReadTokens: (row.cache_read_tokens as number) ?? undefined,
+  };
+}
+
+function rowToMessageWithContext(row: Record<string, unknown>): MessageWithContext {
+  return {
+    ...rowToMessage(row),
+    discordKey: (row.discord_key as string) ?? undefined,
+    channelId: (row.channel_id as string) ?? undefined,
+    userId: (row.user_id as string) ?? undefined,
   };
 }
 
@@ -266,9 +318,21 @@ export function updateSessionActivity(id: string): void {
     .run(Date.now(), id);
 }
 
+/**
+ * Delete a session but archive its messages to message_history first.
+ */
 export function deleteSession(id: string): void {
   const d = getDb();
   const del = d.transaction(() => {
+    // Archive messages before deleting
+    d.prepare(`
+      INSERT INTO message_history (session_id, discord_key, channel_id, user_id, role, content, discord_message_id, created_at, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, archived_at)
+      SELECT m.session_id, s.discord_key, s.channel_id, s.user_id, m.role, m.content, m.discord_message_id, m.created_at, m.model, m.input_tokens, m.output_tokens, m.cache_creation_tokens, m.cache_read_tokens, ?
+      FROM messages m
+      JOIN sessions s ON m.session_id = s.id
+      WHERE m.session_id = ?
+    `).run(Date.now(), id);
+
     d.prepare("DELETE FROM messages WHERE session_id = ?").run(id);
     d.prepare("DELETE FROM sessions WHERE id = ?").run(id);
   });
@@ -315,6 +379,137 @@ export function addMessage(opts: {
       opts.usage?.cacheCreationTokens ?? null,
       opts.usage?.cacheReadTokens ?? null,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-session message queries (for reflection, cron, history review)
+// ---------------------------------------------------------------------------
+
+/**
+ * Get recent messages across all sessions (active + archived).
+ * Queries both the live `messages` table and the `message_history` archive.
+ * Returns messages ordered by created_at DESC (newest first).
+ */
+export function getRecentMessages(opts?: {
+  /** How far back to look in milliseconds (default: 24 hours) */
+  sincMs?: number;
+  /** Max messages to return (default: 100) */
+  limit?: number;
+  /** Filter by user ID */
+  userId?: string;
+  /** Filter by role (user/assistant) */
+  role?: string;
+}): MessageWithContext[] {
+  const since = Date.now() - (opts?.sincMs ?? 24 * 60 * 60 * 1000);
+  const limit = opts?.limit ?? 100;
+  const userId = opts?.userId ?? null;
+  const role = opts?.role ?? null;
+  const d = getDb();
+
+  // Use a single query with UNION ALL and parameterized filters.
+  // The coalesce/null trick: (? IS NULL OR column = ?) lets us optionally filter.
+  const sql = `
+    SELECT * FROM (
+      SELECT m.id, m.session_id, m.role, m.content, m.discord_message_id, m.created_at,
+             m.model, m.input_tokens, m.output_tokens, m.cache_creation_tokens, m.cache_read_tokens,
+             s.discord_key, s.channel_id, s.user_id
+      FROM messages m
+      JOIN sessions s ON m.session_id = s.id
+      WHERE m.created_at > ?1
+        AND (?2 IS NULL OR s.user_id = ?2)
+        AND (?3 IS NULL OR m.role = ?3)
+
+      UNION ALL
+
+      SELECT id, session_id, role, content, discord_message_id, created_at,
+             model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+             discord_key, channel_id, user_id
+      FROM message_history
+      WHERE created_at > ?1
+        AND (?2 IS NULL OR user_id = ?2)
+        AND (?3 IS NULL OR role = ?3)
+    )
+    ORDER BY created_at DESC
+    LIMIT ?4
+  `;
+
+  const rows = d.prepare(sql).all(since, userId, role, limit) as Record<string, unknown>[];
+  return rows.map(rowToMessageWithContext);
+}
+
+/**
+ * Get conversation history stats for a time period.
+ */
+export function getConversationStats(sinceMs?: number): {
+  totalSessions: number;
+  activeSessions: number;
+  totalMessages: number;
+  totalUserMessages: number;
+  totalAssistantMessages: number;
+  uniqueUsers: number;
+} {
+  const since = Date.now() - (sinceMs ?? 24 * 60 * 60 * 1000);
+  const d = getDb();
+
+  const activeSessions = (d.prepare(
+    "SELECT COUNT(*) as count FROM sessions WHERE last_active > ?"
+  ).get(since) as { count: number }).count;
+
+  // Count sessions that have archived messages in the period too
+  const archivedSessions = (d.prepare(
+    "SELECT COUNT(DISTINCT session_id) as count FROM message_history WHERE created_at > ?"
+  ).get(since) as { count: number }).count;
+
+  // Live messages
+  const liveMessages = (d.prepare(
+    "SELECT COUNT(*) as count FROM messages WHERE created_at > ?"
+  ).get(since) as { count: number }).count;
+
+  const archivedMessages = (d.prepare(
+    "SELECT COUNT(*) as count FROM message_history WHERE created_at > ?"
+  ).get(since) as { count: number }).count;
+
+  // User messages
+  const liveUserMessages = (d.prepare(
+    "SELECT COUNT(*) as count FROM messages WHERE created_at > ? AND role = 'user'"
+  ).get(since) as { count: number }).count;
+
+  const archivedUserMessages = (d.prepare(
+    "SELECT COUNT(*) as count FROM message_history WHERE created_at > ? AND role = 'user'"
+  ).get(since) as { count: number }).count;
+
+  // Unique users from both sources
+  const uniqueUsers = (d.prepare(`
+    SELECT COUNT(DISTINCT user_id) as count FROM (
+      SELECT user_id FROM sessions WHERE last_active > ? AND user_id IS NOT NULL
+      UNION
+      SELECT user_id FROM message_history WHERE created_at > ? AND user_id IS NOT NULL
+    )
+  `).get(since, since) as { count: number }).count;
+
+  const totalMessages = liveMessages + archivedMessages;
+  const totalUserMessages = liveUserMessages + archivedUserMessages;
+
+  return {
+    totalSessions: activeSessions + archivedSessions,
+    activeSessions,
+    totalMessages,
+    totalUserMessages,
+    totalAssistantMessages: totalMessages - totalUserMessages,
+    uniqueUsers,
+  };
+}
+
+/**
+ * Prune archived messages older than a retention period.
+ * Default retention: 30 days.
+ */
+export function pruneMessageHistory(retentionMs?: number): number {
+  const cutoff = Date.now() - (retentionMs ?? 30 * 24 * 60 * 60 * 1000);
+  const result = getDb()
+    .prepare("DELETE FROM message_history WHERE created_at < ?")
+    .run(cutoff);
+  return result.changes;
 }
 
 // ---------------------------------------------------------------------------
