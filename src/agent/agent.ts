@@ -236,7 +236,7 @@ function handleConversationHistoryTool(
         const role = input.role as string | undefined;
 
         const messages = getRecentMessages({
-          sincMs: hours * 60 * 60 * 1000,
+          sinceMs: hours * 60 * 60 * 1000,
           limit,
           role,
         });

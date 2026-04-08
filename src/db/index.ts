@@ -392,7 +392,7 @@ export function addMessage(opts: {
  */
 export function getRecentMessages(opts?: {
   /** How far back to look in milliseconds (default: 24 hours) */
-  sincMs?: number;
+  sinceMs?: number;
   /** Max messages to return (default: 100) */
   limit?: number;
   /** Filter by user ID */
@@ -400,14 +400,15 @@ export function getRecentMessages(opts?: {
   /** Filter by role (user/assistant) */
   role?: string;
 }): MessageWithContext[] {
-  const since = Date.now() - (opts?.sincMs ?? 24 * 60 * 60 * 1000);
+  const since = Date.now() - (opts?.sinceMs ?? 24 * 60 * 60 * 1000);
   const limit = opts?.limit ?? 100;
   const userId = opts?.userId ?? null;
   const role = opts?.role ?? null;
   const d = getDb();
 
-  // Use a single query with UNION ALL and parameterized filters.
-  // The coalesce/null trick: (? IS NULL OR column = ?) lets us optionally filter.
+  // Use named parameters to avoid better-sqlite3 issues with numbered params
+  // in UNION ALL queries. The (@x IS NULL OR column = @x) pattern lets us
+  // optionally filter.
   const sql = `
     SELECT * FROM (
       SELECT m.id, m.session_id, m.role, m.content, m.discord_message_id, m.created_at,
@@ -415,9 +416,9 @@ export function getRecentMessages(opts?: {
              s.discord_key, s.channel_id, s.user_id
       FROM messages m
       JOIN sessions s ON m.session_id = s.id
-      WHERE m.created_at > ?1
-        AND (?2 IS NULL OR s.user_id = ?2)
-        AND (?3 IS NULL OR m.role = ?3)
+      WHERE m.created_at > @since
+        AND (@userId IS NULL OR s.user_id = @userId)
+        AND (@role IS NULL OR m.role = @role)
 
       UNION ALL
 
@@ -425,15 +426,15 @@ export function getRecentMessages(opts?: {
              model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
              discord_key, channel_id, user_id
       FROM message_history
-      WHERE created_at > ?1
-        AND (?2 IS NULL OR user_id = ?2)
-        AND (?3 IS NULL OR role = ?3)
+      WHERE created_at > @since
+        AND (@userId IS NULL OR user_id = @userId)
+        AND (@role IS NULL OR role = @role)
     )
     ORDER BY created_at DESC
-    LIMIT ?4
+    LIMIT @limit
   `;
 
-  const rows = d.prepare(sql).all(since, userId, role, limit) as Record<string, unknown>[];
+  const rows = d.prepare(sql).all({ since, userId, role, limit }) as Record<string, unknown>[];
   return rows.map(rowToMessageWithContext);
 }
 
