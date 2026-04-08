@@ -4,7 +4,7 @@ import {
   ApplicationCommandOptionType,
   EmbedBuilder,
 } from "discord.js";
-import { listSessions, clearSession, resolveSession } from "../agent/sessions.js";
+import { clearSession, resolveSession } from "../agent/sessions.js";
 import { getChannelConfig, setChannelConfig, getDb } from "../db/index.js";
 import { getSoul } from "../soul/soul.js";
 import { triggerRestart } from "../restart.js";
@@ -75,10 +75,6 @@ export const slashCommands: ApplicationCommandData[] = [
         type: ApplicationCommandOptionType.Subcommand,
       },
     ],
-  },
-  {
-    name: "sessions",
-    description: "List recent conversation sessions",
   },
   {
     name: "clear",
@@ -315,9 +311,6 @@ export async function handleInteraction(interaction: Interaction): Promise<void>
       case "config":
         await handleConfig(interaction);
         break;
-      case "sessions":
-        await handleSessions(interaction);
-        break;
       case "clear":
         await handleClear(interaction);
         break;
@@ -454,7 +447,6 @@ async function handleHelp(
           "`/config show` — View channel configuration",
           "`/config set-prompt <prompt>` — Set a channel system prompt",
           "`/config toggle` — Enable/disable bot in this channel",
-          "`/sessions` — List recent sessions",
           "`/clear` — Clear the current session",
           "`/soul` — Show the bot personality",
           "`/skills list` — List installed skills",
@@ -559,40 +551,6 @@ async function handleConfig(
         ephemeral: true,
       });
   }
-}
-
-// ---------------------------------------------------------------------------
-// /sessions
-// ---------------------------------------------------------------------------
-
-async function handleSessions(
-  interaction: import("discord.js").ChatInputCommandInteraction,
-): Promise<void> {
-  const guildId = interaction.guildId ?? undefined;
-  const { sessions, total } = listSessions({ guildId, limit: 10 });
-
-  if (sessions.length === 0) {
-    await interaction.reply({
-      content: "No active sessions found.",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  const lines = sessions.map((s, i) => {
-    const age = Math.round((Date.now() - s.lastActive) / 60_000);
-    const ageStr = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
-    const userPart = s.userId ? `<@${s.userId}>` : "unknown";
-    return `**${i + 1}.** ${s.discordKey} — ${userPart} — last active ${ageStr}`;
-  });
-
-  const embed = new EmbedBuilder()
-    .setTitle("Recent Sessions")
-    .setDescription(lines.join("\n"))
-    .setFooter({ text: `Showing ${sessions.length} of ${total} session(s)` })
-    .setColor(0x5865f2);
-
-  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
 // ---------------------------------------------------------------------------
