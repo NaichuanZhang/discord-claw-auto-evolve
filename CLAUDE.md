@@ -16,7 +16,7 @@ The dashboard SPA lives at `src/gateway/ui/` and builds to `dist/ui/`. Vite dev 
 
 ## Architecture
 
-This is a Discord bot that uses Claude as its AI backend. The system has eight major subsystems that initialize sequentially in `src/index.ts`:
+This is a Discord bot that uses Claude as its AI backend. The system has nine major subsystems that initialize sequentially in `src/index.ts`:
 
 **Bot → Agent → Claude API pipeline**: Discord messages flow through `bot/messages.ts` (filter, session resolve, voice transcription, context build) → `agent/agent.ts` (system prompt assembly, tool loop with duplicate detection) → Anthropic SDK. The agent returns an `AgentResponse` with text and extracted images (from markdown `![](url)` syntax). `messages.ts` renders images as Discord embeds (URLs) or attachments (local files). The agent has tools for memory search, Discord actions, skill reading, dangerous ops (bash, file I/O), and self-evolution (worktree + PR).
 
@@ -34,6 +34,10 @@ This is a Discord bot that uses Claude as its AI backend. The system has eight m
 
 **Evolution engine**: Self-modification via GitHub PRs. `src/evolution/engine.ts` manages git worktrees at `beta/`, runs typecheck, pushes branches, and creates PRs via `gh` CLI. 9 agent tools (`evolve_start/read/write/bash/propose/suggest/cancel/review/merge`). `evolve_review` shows PR diff and summary; `evolve_merge` merges the PR via `gh` and triggers an automatic restart to deploy. Evolution history tracked in SQLite `evolutions` table. On startup, `syncDeployedEvolutions()` checks if proposed PRs were merged. `start.sh` is the production entry point: pulls, runs idempotent migrations from `migrations/`, builds, starts, health-checks, and auto-rolls back on failure.
 
+**Reflection system** (self-evolution feedback loop): `src/reflection/` implements autonomous self-improvement discovery. Two components:
+- **Signal collection** (`reflection/signals.ts`): Records events that inform self-evolution — errors, tool failures, duplicate loop patterns. Signals are collected passively from `bot/messages.ts` (message processing errors) and `agent/agent.ts` (tool failures, duplicate tool call loops). Stored in the `signals` SQLite table with type, source, detail, and metadata. Auto-prunes signals older than 7 days.
+- **Reflection daemon** (`reflection/daemon.ts`): Runs on a configurable interval (default: every 6 hours). Gathers signals from the lookback window (default: 24h), builds a structured prompt with signal summaries/conversation stats/existing ideas, calls Claude to analyze the data, and if an improvement is found, records it as an evolution idea and posts a proposal to a Discord channel. Level 1 trust: never auto-implements — always requires human approval. Configured via `REFLECTION_CHANNEL_ID`, `REFLECTION_INTERVAL_HOURS`, `REFLECTION_LOOKBACK_HOURS`, `REFLECTION_MIN_SIGNALS`.
+
 **Gateway**: Express server + WebSocket at `/ws/logs` for real-time log streaming. REST API at `/api/*` exposes all subsystem CRUD including evolution history. React SPA dashboard served from `dist/ui/`.
 
 ## Key Patterns
@@ -45,6 +49,7 @@ This is a Discord bot that uses Claude as its AI backend. The system has eight m
 - **All runtime data** lives in `data/` (gitignored): SQLite DB, SOUL.md, memory files, cron store, skills, migration markers.
 - **Evolution isolation**: `beta/` is a git worktree (gitignored). The running bot's source is never modified directly — all changes go through PRs.
 - **Skill vs Code guardrail**: The evolution system prompt includes a mandatory pre-flight decision tree. Before starting any code evolution, the agent must evaluate whether the capability can be delivered as a skill (`data/skills/<name>/SKILL.md`) using existing tools, or as a soul/memory change. Code evolutions are reserved for new runtime capabilities (new tools, new API clients, new packages, pipeline changes, bug fixes). See `EVOLUTION_INSTRUCTIONS` in `src/agent/agent.ts`.
+- **Signal collection is passive and non-blocking**: `recordSignal()` never throws — errors during recording are caught and logged. This ensures signal collection can never crash the main message processing pipeline.
 
 ## Skill vs Code Decision Guide
 
@@ -58,4 +63,4 @@ Skills are preferred over code when possible: they're cheaper, safer, instantly 
 
 ## Environment
 
-Requires either `ANTHROPIC_API_KEY` or `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` (for proxy). `DISCORD_BOT_TOKEN` is always required. `OPENAI_API_KEY` is optional — enables voice message transcription via Whisper. See `.env.example`.
+Requires either `ANTHROPIC_API_KEY` or `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` (for proxy). `DISCORD_BOT_TOKEN` is always required. `OPENAI_API_KEY` is optional — enables voice message transcription via Whisper. `REFLECTION_CHANNEL_ID` is optional — sets the Discord channel where the reflection daemon posts improvement proposals. See `.env.example`.

@@ -128,6 +128,35 @@ export function initDb(): void {
       merged_at INTEGER,
       deployed_at INTEGER
     );
+
+    CREATE TABLE IF NOT EXISTS signals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      source TEXT,
+      detail TEXT NOT NULL,
+      metadata TEXT,
+      session_id TEXT,
+      user_id TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+
+    CREATE TABLE IF NOT EXISTS reflection_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      signals_analyzed INTEGER DEFAULT 0,
+      outcome TEXT,
+      proposal TEXT,
+      evolution_id TEXT,
+      error TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+  `);
+
+  // Create indexes (idempotent — CREATE INDEX IF NOT EXISTS)
+  d.exec(`
+    CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(type);
+    CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at);
   `);
 }
 

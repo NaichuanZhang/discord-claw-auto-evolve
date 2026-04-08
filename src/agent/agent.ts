@@ -6,6 +6,7 @@ import { skillTools, handleSkillTool } from "../skills/tools.js";
 import { dangerousTools, handleDangerousTool } from "./dangerous-tools.js";
 import { evolutionTools, handleEvolutionTool, setEvolutionContext } from "../evolution/tools.js";
 import type { Message, ChannelConfig } from "../db/index.js";
+import { recordSignal } from "../reflection/signals.js";
 import { getSkillService } from "../skills/service.js";
 
 // ---------------------------------------------------------------------------
@@ -251,29 +252,28 @@ function buildMessageHistory(
 async function executeTool(
   name: string,
   input: Record<string, unknown>,
+  context?: { sessionId?: string; userId?: string },
 ): Promise<string> {
+  let result: string;
+
   // Memory tools are synchronous
   if (name === "memory_search" || name === "memory_get") {
-    return handleMemoryTool(name, input);
+    result = handleMemoryTool(name, input);
   }
-
   // Discord tools are async
-  if (name === "send_message" || name === "send_file" || name === "add_reaction" || name === "get_channel_history") {
-    return await handleDiscordTool(name, input);
+  else if (name === "send_message" || name === "send_file" || name === "add_reaction" || name === "get_channel_history") {
+    result = await handleDiscordTool(name, input);
   }
-
   // Skill tools are synchronous
-  if (name === "read_skill" || name === "list_skill_files") {
-    return handleSkillTool(name, input);
+  else if (name === "read_skill" || name === "list_skill_files") {
+    result = handleSkillTool(name, input);
   }
-
   // Dangerous tools (bash, read_file, write_file)
-  if (name === "bash" || name === "read_file" || name === "write_file") {
-    return await handleDangerousTool(name, input);
+  else if (name === "bash" || name === "read_file" || name === "write_file") {
+    result = await handleDangerousTool(name, input);
   }
-
   // Evolution tools
-  if (
+  else if (
     name === "evolve_start" ||
     name === "evolve_read" ||
     name === "evolve_write" ||
@@ -284,10 +284,33 @@ async function executeTool(
     name === "evolve_review" ||
     name === "evolve_merge"
   ) {
-    return await handleEvolutionTool(name, input);
+    result = await handleEvolutionTool(name, input);
+  } else {
+    result = JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 
-  return JSON.stringify({ error: `Unknown tool: ${name}` });
+  // Record tool failures as signals for reflection
+  try {
+    const parsed = JSON.parse(result);
+    if (parsed.error) {
+      recordSignal({
+        type: "tool_failure",
+        source: "agent",
+        detail: `Tool "${name}" failed: ${typeof parsed.error === "string" ? parsed.error.slice(0, 300) : JSON.stringify(parsed.error).slice(0, 300)}`,
+        metadata: {
+          tool: name,
+          input: JSON.stringify(input).slice(0, 500),
+          error: parsed.error,
+        },
+        sessionId: context?.sessionId,
+        userId: context?.userId,
+      });
+    }
+  } catch {
+    // Result wasn't JSON or parsing failed — that's fine
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +443,19 @@ export async function processMessage(opts: {
     // If we've hit the dupe limit, force the model to stop looping
     if (consecutiveDupes >= MAX_CONSECUTIVE_DUPES) {
       console.log("[agent] Breaking loop — repeated duplicate tool calls");
+
+      // Record as a signal — duplicate loops indicate a potential issue
+      recordSignal({
+        type: "pattern",
+        source: "agent",
+        detail: `Duplicate tool call loop broken: ${currentSignatures[0]?.split(":")[0] || "unknown"}`,
+        metadata: {
+          tools: currentSignatures.map((s) => s.split(":")[0]),
+        },
+        sessionId: opts.sessionId,
+        userId: opts.context.userId,
+      });
+
       // Give the model one last chance with a nudge instead of tools
       messages.push({ role: "assistant", content: response.content });
       messages.push({
@@ -453,6 +489,7 @@ export async function processMessage(opts: {
         const result = await executeTool(
           block.name,
           block.input as Record<string, unknown>,
+          { sessionId: opts.sessionId, userId: opts.context.userId },
         );
         toolResults.push({
           type: "tool_result",

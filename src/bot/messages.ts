@@ -17,6 +17,7 @@ import {
   transcribeAudio,
   isTranscriptionAvailable,
 } from "../audio/transcribe.js";
+import { recordSignal } from "../reflection/signals.js";
 
 // ---------------------------------------------------------------------------
 // Bot client reference (needed for mention checks)
@@ -390,6 +391,21 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
   } catch (err) {
     stopTyping();
     console.error("[bot] Error processing message:", err);
+
+    // Record error signal for reflection
+    recordSignal({
+      type: "error",
+      source: "messages",
+      detail: `Message processing error: ${err instanceof Error ? err.message : String(err)}`,
+      metadata: {
+        error: err instanceof Error ? err.stack : String(err),
+        channelName,
+        userMessage: cleanContent.slice(0, 200),
+      },
+      sessionId: session.id,
+      userId: message.author.id,
+    });
+
     try {
       await message.reply(
         "Sorry, I ran into an error processing your message. Please try again.",
