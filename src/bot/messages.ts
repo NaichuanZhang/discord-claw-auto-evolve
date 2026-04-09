@@ -341,6 +341,35 @@ function isBotCreatedThread(message: DiscordMessage): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Monitored channel helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a channel is "monitored" — meaning the bot should respond to all
+ * messages without requiring an @mention, creating threads for top-level
+ * messages and responding directly in threads under monitored channels.
+ *
+ * The `monitor` flag is stored in the channel_configs settings JSON:
+ *   { "monitor": true }
+ */
+function isMonitoredChannel(message: DiscordMessage): boolean {
+  // Determine the base channel ID to check config for
+  let channelIdToCheck: string;
+
+  if (isThreadChannel(message)) {
+    // For threads, check the parent channel's config
+    const parentId = (message.channel as ThreadChannel).parentId;
+    if (!parentId) return false;
+    channelIdToCheck = parentId;
+  } else {
+    channelIdToCheck = message.channelId;
+  }
+
+  const config = getChannelConfig(channelIdToCheck);
+  return config?.settings?.monitor === true;
+}
+
+// ---------------------------------------------------------------------------
 // Main message handler
 // ---------------------------------------------------------------------------
 
@@ -355,22 +384,23 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
   const isVoice = isVoiceMessage(message);
   const hasAudio = hasAudioAttachments(message);
   const inBotThread = isBotCreatedThread(message);
+  const inMonitoredChannel = !isDM && isMonitoredChannel(message);
 
   console.log(
-    `[bot] Message from ${message.author.tag} isDM=${isDM} isVoice=${isVoice} hasAudio=${hasAudio} inBotThread=${inBotThread} content="${message.content.slice(0, 80)}"`,
+    `[bot] Message from ${message.author.tag} isDM=${isDM} isVoice=${isVoice} hasAudio=${hasAudio} inBotThread=${inBotThread} monitored=${inMonitoredChannel} content="${message.content.slice(0, 80)}"`,
   );
 
-  // 2. Filter: in guild channels, respond when mentioned OR when in a bot-created thread
+  // 2. Filter: in guild channels, respond when mentioned OR when in a bot-created thread OR when in a monitored channel
   if (!isDM) {
     const botUser = botClient?.user;
     if (!botUser) {
       console.log("[bot] Skipping — botClient.user is null");
       return;
     }
-    // In bot-created threads, respond to all messages (no mention needed)
+    // In bot-created threads, monitored channels (and their threads), respond to all messages (no mention needed)
     // In other channels/threads, require a mention
-    if (!inBotThread && !message.mentions.has(botUser)) {
-      console.log("[bot] Skipping — bot not mentioned and not in bot thread");
+    if (!inBotThread && !inMonitoredChannel && !message.mentions.has(botUser)) {
+      console.log("[bot] Skipping — bot not mentioned and not in bot thread or monitored channel");
       return;
     }
   }
@@ -621,7 +651,7 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
       );
     }
     console.log(
-      `[bot] Replied to ${message.author.tag} in ${channelName}${sessionThreadId ? ` (thread ${sessionThreadId})` : ""} (session ${session.id})${imageCount > 0 ? ` with ${imageCount} image(s)` : ""}${isVoice ? " [voice]" : ""}`,
+      `[bot] Replied to ${message.author.tag} in ${channelName}${sessionThreadId ? ` (thread ${sessionThreadId})` : ""}${inMonitoredChannel ? " [monitored]" : ""} (session ${session.id})${imageCount > 0 ? ` with ${imageCount} image(s)` : ""}${isVoice ? " [voice]" : ""}`,
     );
   } catch (err) {
     stopTyping();
