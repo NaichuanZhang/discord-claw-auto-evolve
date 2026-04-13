@@ -2,6 +2,7 @@
  * Silero VAD (Voice Activity Detection) wrapper.
  * Uses the ONNX runtime to run the Silero VAD model directly.
  *
+ * Supports both Silero VAD v4 (h/c/hn/cn) and v5 (state/stateN) formats.
  * The model processes 30ms audio frames at 16kHz (480 samples)
  * and returns a speech probability [0.0 - 1.0].
  */
@@ -40,15 +41,19 @@ function getModelPath(): string {
 
 export class SileroVAD {
   private session: ort.InferenceSession | null = null;
-  private _h: ort.Tensor;
-  private _c: ort.Tensor;
   private _sr: ort.Tensor;
 
+  // v5 model format: single state tensor [2, 1, 128]
+  private _state: ort.Tensor | null = null;
+
+  // v4 model format: separate h/c tensors [2, 1, 64]
+  private _h: ort.Tensor | null = null;
+  private _c: ort.Tensor | null = null;
+
+  /** Whether the loaded model uses v5 format (state/stateN) vs v4 (h,c/hn,cn) */
+  private _isV5 = false;
+
   constructor() {
-    // Initialize LSTM hidden states (2, 1, 64)
-    const stateSize = 2 * 1 * 64;
-    this._h = new ort.Tensor("float32", new Float32Array(stateSize), [2, 1, 64]);
-    this._c = new ort.Tensor("float32", new Float32Array(stateSize), [2, 1, 64]);
     this._sr = new ort.Tensor("int64", BigInt64Array.from([BigInt(SAMPLE_RATE)]), [1]);
   }
 
@@ -61,7 +66,31 @@ export class SileroVAD {
     this.session = await ort.InferenceSession.create(modelPath, {
       executionProviders: ["cpu"],
     });
-    console.log("[vad] Silero VAD model loaded");
+
+    // Detect model version by checking input names
+    const inputNames = this.session.inputNames;
+    this._isV5 = inputNames.includes("state");
+
+    if (this._isV5) {
+      console.log("[vad] Silero VAD v5 model loaded (state/stateN format)");
+      this._initStateV5();
+    } else {
+      console.log("[vad] Silero VAD v4 model loaded (h/c format)");
+      this._initStateV4();
+    }
+  }
+
+  private _initStateV5(): void {
+    // v5: single state tensor [2, 1, 128]
+    const stateSize = 2 * 1 * 128;
+    this._state = new ort.Tensor("float32", new Float32Array(stateSize), [2, 1, 128]);
+  }
+
+  private _initStateV4(): void {
+    // v4: separate LSTM hidden states (2, 1, 64)
+    const stateSize = 2 * 1 * 64;
+    this._h = new ort.Tensor("float32", new Float32Array(stateSize), [2, 1, 64]);
+    this._c = new ort.Tensor("float32", new Float32Array(stateSize), [2, 1, 64]);
   }
 
   /**
@@ -84,18 +113,31 @@ export class SileroVAD {
 
     const inputTensor = new ort.Tensor("float32", inputFrame, [1, FRAME_SIZE]);
 
-    const feeds: Record<string, ort.Tensor> = {
-      input: inputTensor,
-      h: this._h,
-      c: this._c,
-      sr: this._sr,
-    };
+    let feeds: Record<string, ort.Tensor>;
+    if (this._isV5) {
+      feeds = {
+        input: inputTensor,
+        state: this._state!,
+        sr: this._sr,
+      };
+    } else {
+      feeds = {
+        input: inputTensor,
+        h: this._h!,
+        c: this._c!,
+        sr: this._sr,
+      };
+    }
 
     const results = await this.session.run(feeds);
 
     // Update hidden states for next call
-    this._h = results["hn"] as ort.Tensor;
-    this._c = results["cn"] as ort.Tensor;
+    if (this._isV5) {
+      this._state = results["stateN"] as ort.Tensor;
+    } else {
+      this._h = results["hn"] as ort.Tensor;
+      this._c = results["cn"] as ort.Tensor;
+    }
 
     // Get speech probability
     const output = results["output"] as ort.Tensor;
@@ -116,9 +158,11 @@ export class SileroVAD {
    * Reset the hidden states (call between utterances or users).
    */
   reset(): void {
-    const stateSize = 2 * 1 * 64;
-    this._h = new ort.Tensor("float32", new Float32Array(stateSize), [2, 1, 64]);
-    this._c = new ort.Tensor("float32", new Float32Array(stateSize), [2, 1, 64]);
+    if (this._isV5) {
+      this._initStateV5();
+    } else {
+      this._initStateV4();
+    }
   }
 
   /**
