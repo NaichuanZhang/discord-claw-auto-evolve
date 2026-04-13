@@ -5,7 +5,8 @@
  */
 
 import type { VoiceConnection } from "@discordjs/voice";
-import { OpusEncoder } from "@discordjs/opus";
+import opus from "@discordjs/opus";
+const { OpusEncoder } = opus;
 
 // ---------------------------------------------------------------------------
 // Constants
