@@ -499,7 +499,7 @@ export function extractImages(text: string): { cleanText: string; images: AgentI
 // ---------------------------------------------------------------------------
 
 export async function processMessage(opts: {
-  message: string;
+  message: string | Anthropic.Messages.ContentBlockParam[];
   sessionId: string;
   context: {
     guildName?: string;

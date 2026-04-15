@@ -22,6 +22,7 @@ import {
   isTranscriptionAvailable,
 } from "../audio/transcribe.js";
 import { recordSignal } from "../reflection/signals.js";
+import type Anthropic from "@anthropic-ai/sdk";
 
 // ---------------------------------------------------------------------------
 // Bot client reference (needed for mention checks)
@@ -240,6 +241,97 @@ async function transcribeVoiceMessage(
 }
 
 // ---------------------------------------------------------------------------
+// Image attachment handling — convert Discord images to Claude content blocks
+// ---------------------------------------------------------------------------
+
+/** Image MIME types that Claude supports. */
+const SUPPORTED_IMAGE_TYPES: Record<string, Anthropic.Messages.Base64ImageSource["media_type"]> = {
+  "image/jpeg": "image/jpeg",
+  "image/png": "image/png",
+  "image/gif": "image/gif",
+  "image/webp": "image/webp",
+};
+
+/** Max image size to fetch (20 MB). Discord CDN allows up to 25 MB. */
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Check if a Discord message has image attachments.
+ */
+function hasImageAttachments(message: DiscordMessage): boolean {
+  return message.attachments.some((att) => {
+    const ct = att.contentType?.toLowerCase() || "";
+    return ct in SUPPORTED_IMAGE_TYPES;
+  });
+}
+
+/**
+ * Fetch image attachments from a Discord message and convert them to
+ * Anthropic ImageBlockParam content blocks (base64-encoded).
+ *
+ * Skips images that are too large or fail to download.
+ */
+async function buildImageContentBlocks(
+  message: DiscordMessage,
+): Promise<Anthropic.Messages.ImageBlockParam[]> {
+  const imageAttachments = message.attachments.filter((att) => {
+    const ct = att.contentType?.toLowerCase() || "";
+    return ct in SUPPORTED_IMAGE_TYPES;
+  });
+
+  if (imageAttachments.size === 0) return [];
+
+  const blocks: Anthropic.Messages.ImageBlockParam[] = [];
+
+  for (const [, attachment] of imageAttachments) {
+    try {
+      // Skip overly large images
+      if (attachment.size && attachment.size > MAX_IMAGE_BYTES) {
+        console.log(
+          `[bot] Skipping image ${attachment.name} — too large (${(attachment.size / 1024 / 1024).toFixed(1)} MB)`,
+        );
+        continue;
+      }
+
+      const response = await fetch(attachment.url);
+      if (!response.ok) {
+        console.error(
+          `[bot] Failed to fetch image ${attachment.name}: HTTP ${response.status}`,
+        );
+        continue;
+      }
+
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const base64 = buffer.toString("base64");
+      const mediaType =
+        SUPPORTED_IMAGE_TYPES[attachment.contentType?.toLowerCase() || ""];
+
+      if (!mediaType) continue;
+
+      blocks.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: mediaType,
+          data: base64,
+        },
+      });
+
+      console.log(
+        `[bot] Loaded image attachment: ${attachment.name} (${mediaType}, ${(buffer.length / 1024).toFixed(0)} KB)`,
+      );
+    } catch (err) {
+      console.error(
+        `[bot] Failed to process image attachment ${attachment.name}:`,
+        err,
+      );
+    }
+  }
+
+  return blocks;
+}
+
+// ---------------------------------------------------------------------------
 // Thread creation helper
 // ---------------------------------------------------------------------------
 
@@ -391,11 +483,12 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
   const isDM = message.channel.isDMBased();
   const isVoice = isVoiceMessage(message);
   const hasAudio = hasAudioAttachments(message);
+  const hasImages = hasImageAttachments(message);
   const inBotThread = isBotCreatedThread(message);
   const inMonitoredChannel = !isDM && isMonitoredChannel(message);
 
   console.log(
-    `[bot] Message from ${message.author.tag} isDM=${isDM} isVoice=${isVoice} hasAudio=${hasAudio} inBotThread=${inBotThread} monitored=${inMonitoredChannel} content="${message.content.slice(0, 80)}"`,
+    `[bot] Message from ${message.author.tag} isDM=${isDM} isVoice=${isVoice} hasAudio=${hasAudio} hasImages=${hasImages} inBotThread=${inBotThread} monitored=${inMonitoredChannel} content="${message.content.slice(0, 80)}"`,
   );
 
   // 2. Filter: in guild channels, respond when mentioned OR when in a bot-created thread OR when in a monitored channel
@@ -461,8 +554,8 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
       } else {
         cleanContent = transcript;
       }
-    } else if (!cleanContent) {
-      // No transcription available and no text content
+    } else if (!cleanContent && !hasImages) {
+      // No transcription available and no text content and no images
       if (!isTranscriptionAvailable()) {
         await message.reply(
           "🎤 I can see you sent a voice message, but voice transcription isn't configured yet. Ask an admin to set the `OPENAI_API_KEY` environment variable to enable it!",
@@ -476,13 +569,47 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
     }
   }
 
-  if (!cleanContent) return; // Nothing left after stripping mentions
+  // 6c. Handle image attachments — build Claude vision content blocks
+  let imageBlocks: Anthropic.Messages.ImageBlockParam[] = [];
+  if (hasImages) {
+    // Show typing while we fetch images
+    if ("sendTyping" in message.channel) {
+      message.channel.sendTyping().catch(() => {});
+    }
+
+    imageBlocks = await buildImageContentBlocks(message);
+
+    if (imageBlocks.length > 0) {
+      console.log(
+        `[bot] Prepared ${imageBlocks.length} image(s) for vision`,
+      );
+    }
+  }
+
+  // If no text and no images, nothing to send
+  if (!cleanContent && imageBlocks.length === 0) return;
+
+  // Build the message content — either a plain string or content blocks with images
+  let messageContent: string | Anthropic.Messages.ContentBlockParam[];
+  if (imageBlocks.length > 0) {
+    // Build content block array: images first, then text (if any)
+    const blocks: Anthropic.Messages.ContentBlockParam[] = [...imageBlocks];
+    if (cleanContent) {
+      blocks.push({ type: "text", text: cleanContent });
+    } else {
+      // Images with no text — add a prompt so Claude knows to describe/analyze
+      blocks.push({ type: "text", text: "What do you see in this image?" });
+    }
+    messageContent = blocks;
+  } else {
+    messageContent = cleanContent;
+  }
 
   // 7. Create thread if needed (before resolving session so session uses thread ID)
   let replyTarget: DiscordMessage["channel"] | ThreadChannel = message.channel;
 
   if (shouldCreateThread) {
-    const thread = await createThreadForReply(message, cleanContent);
+    const thread = await createThreadForReply(message, cleanContent || "[Image]");
     if (thread) {
       replyTarget = thread;
       sessionThreadId = thread.id;
@@ -526,11 +653,18 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
 
   startTyping();
 
+  // For DB logging, use the text portion only (images are noted as attachment count)
+  const logContent = cleanContent
+    ? (imageBlocks.length > 0
+        ? `${cleanContent}\n\n[${imageBlocks.length} image(s) attached]`
+        : cleanContent)
+    : `[${imageBlocks.length} image(s) attached]`;
+
   try {
     // 10. Agent dispatch — track latency
     const startTime = Date.now();
     const response: AgentResponse = await processMessage({
-      message: cleanContent,
+      message: messageContent,
       sessionId: session.id,
       context: {
         guildName,
@@ -558,7 +692,7 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
     addMessage({
       sessionId: session.id,
       role: "user",
-      content: cleanContent,
+      content: logContent,
       discordMessageId: message.id,
     });
 
@@ -574,7 +708,7 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
       type: "message",
       sessionId: session.id,
       role: "user",
-      content: cleanContent,
+      content: logContent,
       channel: channelName,
       user: message.author.username,
       timestamp: Date.now(),
@@ -659,7 +793,7 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
       );
     }
     console.log(
-      `[bot] Replied to ${message.author.tag} in ${channelName}${sessionThreadId ? ` (thread ${sessionThreadId})` : ""}${inMonitoredChannel ? " [monitored]" : ""} (session ${session.id})${imageCount > 0 ? ` with ${imageCount} image(s)` : ""}${isVoice ? " [voice]" : ""}`,
+      `[bot] Replied to ${message.author.tag} in ${channelName}${sessionThreadId ? ` (thread ${sessionThreadId})` : ""}${inMonitoredChannel ? " [monitored]" : ""} (session ${session.id})${imageCount > 0 ? ` with ${imageCount} image(s)` : ""}${isVoice ? " [voice]" : ""}${imageBlocks.length > 0 ? ` [${imageBlocks.length} input image(s)]` : ""}`,
     );
   } catch (err) {
     stopTyping();
@@ -673,7 +807,7 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
       metadata: {
         error: err instanceof Error ? err.stack : String(err),
         channelName,
-        userMessage: cleanContent.slice(0, 200),
+        userMessage: logContent.slice(0, 200),
       },
       sessionId: session.id,
       userId: message.author.id,
