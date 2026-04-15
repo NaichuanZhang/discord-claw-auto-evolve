@@ -275,6 +275,17 @@ function rollbackEvolution(commitMessage: string): boolean {
       timeout: 30_000,
     });
 
+    // Push the revert to remote so future git pull stays in sync
+    log("Pushing revert to origin/main...");
+    execSync("git push origin main", {
+      cwd: ROOT,
+      encoding: "utf-8",
+      timeout: 30_000,
+    });
+
+    // Mark the evolution as rolled_back in SQLite (best-effort)
+    markEvolutionRolledBack(commitMessage);
+
     // Rebuild
     log("Rebuilding after rollback...");
     execSync("npm run build", {
@@ -289,6 +300,29 @@ function rollbackEvolution(commitMessage: string): boolean {
   } catch (err) {
     logError(`Rollback failed: ${err}`);
     return false;
+  }
+}
+
+/**
+ * Best-effort: find the most recently deployed evolution and mark it rolled_back.
+ * Uses sqlite3 CLI to avoid importing better-sqlite3 (keeps daemon independent).
+ */
+function markEvolutionRolledBack(commitMessage: string): void {
+  try {
+    const dbPath = resolve(ROOT, "data/discordclaw.db");
+    if (!existsSync(dbPath)) return;
+
+    // Match by commit message subject in changes_summary or by most recent deployed
+    const sql = `UPDATE evolutions SET status = 'rolled_back' WHERE status = 'deployed' AND deployed_at = (SELECT MAX(deployed_at) FROM evolutions WHERE status = 'deployed');`;
+
+    execSync(`sqlite3 "${dbPath}" "${sql}"`, {
+      cwd: ROOT,
+      encoding: "utf-8",
+      timeout: 5_000,
+    });
+    log("Marked evolution as rolled_back in database");
+  } catch (err) {
+    logError(`Failed to update evolution status (non-fatal): ${err}`);
   }
 }
 
