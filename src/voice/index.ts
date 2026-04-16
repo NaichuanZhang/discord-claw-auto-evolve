@@ -5,7 +5,10 @@
  *
  * Flow:
  *   User speaks → opus decode → downsample → Silero VAD → utterance detection
- *   → EigenAI Whisper STT → Claude Sonnet → EigenAI Chatterbox TTS → play audio
+ *   → EigenAI Whisper STT → Claude Sonnet → EigenAI Chatterbox TTS (streaming) → play audio
+ *
+ * TTS streaming: each sentence gets streamed via SSE — playback starts as soon
+ * as the first PCM chunk arrives (~500ms) instead of waiting for full synthesis (~1.4s).
  */
 
 import {
@@ -21,7 +24,7 @@ import { joinChannel, leaveChannel, isConnected, getConnection } from "./connect
 import { subscribeToUser, downsampleToMono16kInt16, type UserAudioStream } from "./receiver.js";
 import { SileroVAD, FRAME_SIZE } from "./vad.js";
 import { transcribe } from "./stt.js";
-import { synthesize } from "./tts.js";
+import { synthesize, synthesizeStream, type TTSStreamResult } from "./tts.js";
 import { processVoiceUtteranceStreaming, clearVoiceHistory } from "./agent.js";
 
 // ---------------------------------------------------------------------------
@@ -31,6 +34,9 @@ import { processVoiceUtteranceStreaming, clearVoiceHistory } from "./agent.js";
 const SILENCE_DURATION_MS = parseInt(process.env.VOICE_SILENCE_MS || "800", 10);
 const MIN_UTTERANCE_MS = parseInt(process.env.VOICE_MIN_UTTERANCE_MS || "500", 10);
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/** Use streaming TTS (SSE) for lower TTFB. Set VOICE_TTS_STREAM=0 to disable. */
+const TTS_STREAM = process.env.VOICE_TTS_STREAM !== "0";
 
 /** At 16kHz, samples per ms */
 const SAMPLES_PER_MS = 16;
@@ -97,7 +103,7 @@ export async function initVoice(): Promise<void> {
   vad = new SileroVAD();
   await vad.init();
   console.log("[voice] Voice assistant initialized");
-  console.log(`[voice] Config: SILENCE_DURATION=${SILENCE_DURATION_MS}ms, MIN_UTTERANCE=${MIN_UTTERANCE_MS}ms, DEBUG=${VOICE_DEBUG}`);
+  console.log(`[voice] Config: SILENCE_DURATION=${SILENCE_DURATION_MS}ms, MIN_UTTERANCE=${MIN_UTTERANCE_MS}ms, DEBUG=${VOICE_DEBUG}, TTS_STREAM=${TTS_STREAM}`);
 }
 
 /**
@@ -434,66 +440,132 @@ async function onUtteranceComplete(userId: string): Promise<void> {
     const userName = await getUserDisplayName(userId);
     dbg("pipeline", `User display name: ${userName}`);
 
-    // 5. Streaming pipeline: Claude → sentence-level TTS → sequential playback
-    //    As Claude generates each sentence, fire TTS immediately.
-    //    Play sentences in order as their audio becomes available.
-    console.log(`[voice] 📝 Step 3: Streaming response + TTS pipelining...`);
+    // 5. Streaming pipeline: Agent → sentence-level TTS → sequential playback
+    console.log(`[voice] 📝 Step 3: Streaming response + TTS pipelining (streaming=${TTS_STREAM})...`);
     const agentStart = Date.now();
-    const audioQueue: Promise<Buffer>[] = [];
-    let generationDone = false;
     let sentenceCount = 0;
 
-    // Task 1: Stream sentences from Claude and fire TTS for each
-    const generateTask = processVoiceUtteranceStreaming(
-      text,
-      userName,
-      (sentence: string) => {
-        sentenceCount++;
-        console.log(`[voice] 📝 Sentence ${sentenceCount}: "${sentence}"`);
-        audioQueue.push(synthesize(sentence, abortController.signal));
-      },
-      abortController.signal,
-    ).then((fullResponse) => {
-      generationDone = true;
-      return fullResponse;
-    });
+    if (TTS_STREAM) {
+      // ---------------------------------------------------------------
+      // STREAMING TTS PATH
+      // Each sentence → SSE streaming TTS → play as chunks arrive
+      // Playback starts ~500ms after TTS request (vs ~1.4s non-streaming)
+      // ---------------------------------------------------------------
+      const ttsQueue: TTSStreamResult[] = [];
+      let generationDone = false;
 
-    // Task 2: Play audio as it becomes available, in order
-    const playTask = (async () => {
-      let playIndex = 0;
-      while (true) {
-        if (abortController.signal.aborted) break;
+      // Task 1: Stream sentences from Agent and fire streaming TTS for each
+      const generateTask = processVoiceUtteranceStreaming(
+        text,
+        userName,
+        (sentence: string) => {
+          sentenceCount++;
+          console.log(`[voice] 📝 Sentence ${sentenceCount}: "${sentence}"`);
+          const ttsResult = synthesizeStream(sentence, abortController.signal);
+          ttsQueue.push(ttsResult);
+        },
+        abortController.signal,
+      ).then((fullResponse) => {
+        generationDone = true;
+        return fullResponse;
+      });
 
-        if (playIndex < audioQueue.length) {
-          try {
-            const audio = await audioQueue[playIndex];
-            if (!abortController.signal.aborted) {
-              await playAudio(audio);
+      // Task 2: Play streaming audio as it becomes available, in order
+      const playTask = (async () => {
+        let playIndex = 0;
+        while (true) {
+          if (abortController.signal.aborted) break;
+
+          if (playIndex < ttsQueue.length) {
+            const ttsResult = ttsQueue[playIndex];
+            try {
+              // Play the streaming audio — the stream emits WAV header + PCM chunks
+              // as they arrive from the SSE endpoint
+              await playStreamingAudio(ttsResult);
+              // Wait for the TTS stream to fully finish before moving on
+              await ttsResult.done;
+            } catch (err) {
+              if ((err as Error).name === "AbortError") break;
+              console.error(`[voice] TTS/play error for sentence ${playIndex + 1}:`, err);
             }
-          } catch (err) {
-            if ((err as Error).name === "AbortError") break;
-            console.error(`[voice] TTS/play error for sentence ${playIndex + 1}:`, err);
+            playIndex++;
+          } else if (generationDone) {
+            break;
+          } else {
+            // Wait briefly for next sentence to arrive
+            await new Promise((r) => setTimeout(r, 50));
           }
-          playIndex++;
-        } else if (generationDone) {
-          break;
-        } else {
-          // Wait briefly for next sentence to arrive
-          await new Promise((r) => setTimeout(r, 50));
         }
-      }
-    })();
+      })();
 
-    const [fullResponse] = await Promise.all([generateTask, playTask]);
+      const [fullResponse] = await Promise.all([generateTask, playTask]);
 
-    // Drain any un-awaited TTS promises so aborted fetches don't become
-    // unhandled rejections (playTask may break out before reaching them all).
-    await Promise.allSettled(audioQueue);
+      // Drain any un-awaited TTS done promises so errors don't become unhandled
+      await Promise.allSettled(ttsQueue.map((t) => t.done));
 
-    const agentElapsed = Date.now() - agentStart;
-    const totalElapsed = Date.now() - pipelineStart;
-    console.log(`[voice] ✅ Pipeline complete in ${totalElapsed}ms (STT=${sttElapsed}ms, Agent+TTS+Play=${agentElapsed}ms, sentences=${sentenceCount})`);
-    console.log(`[voice] ✅ "${text}" → "${fullResponse}"`);
+      const agentElapsed = Date.now() - agentStart;
+      const totalElapsed = Date.now() - pipelineStart;
+      console.log(`[voice] ✅ Pipeline complete in ${totalElapsed}ms (STT=${sttElapsed}ms, Agent+TTS+Play=${agentElapsed}ms, sentences=${sentenceCount}, streaming=true)`);
+      console.log(`[voice] ✅ "${text}" → "${fullResponse}"`);
+    } else {
+      // ---------------------------------------------------------------
+      // NON-STREAMING TTS PATH (legacy)
+      // Each sentence → full synthesis → play complete WAV
+      // ---------------------------------------------------------------
+      const audioQueue: Promise<Buffer>[] = [];
+      let generationDone = false;
+
+      // Task 1: Stream sentences from Agent and fire TTS for each
+      const generateTask = processVoiceUtteranceStreaming(
+        text,
+        userName,
+        (sentence: string) => {
+          sentenceCount++;
+          console.log(`[voice] 📝 Sentence ${sentenceCount}: "${sentence}"`);
+          audioQueue.push(synthesize(sentence, abortController.signal));
+        },
+        abortController.signal,
+      ).then((fullResponse) => {
+        generationDone = true;
+        return fullResponse;
+      });
+
+      // Task 2: Play audio as it becomes available, in order
+      const playTask = (async () => {
+        let playIndex = 0;
+        while (true) {
+          if (abortController.signal.aborted) break;
+
+          if (playIndex < audioQueue.length) {
+            try {
+              const audio = await audioQueue[playIndex];
+              if (!abortController.signal.aborted) {
+                await playAudio(audio);
+              }
+            } catch (err) {
+              if ((err as Error).name === "AbortError") break;
+              console.error(`[voice] TTS/play error for sentence ${playIndex + 1}:`, err);
+            }
+            playIndex++;
+          } else if (generationDone) {
+            break;
+          } else {
+            // Wait briefly for next sentence to arrive
+            await new Promise((r) => setTimeout(r, 50));
+          }
+        }
+      })();
+
+      const [fullResponse] = await Promise.all([generateTask, playTask]);
+
+      // Drain any un-awaited TTS promises
+      await Promise.allSettled(audioQueue);
+
+      const agentElapsed = Date.now() - agentStart;
+      const totalElapsed = Date.now() - pipelineStart;
+      console.log(`[voice] ✅ Pipeline complete in ${totalElapsed}ms (STT=${sttElapsed}ms, Agent+TTS+Play=${agentElapsed}ms, sentences=${sentenceCount}, streaming=false)`);
+      console.log(`[voice] ✅ "${text}" → "${fullResponse}"`);
+    }
   } catch (err) {
     if (abortController.signal.aborted) {
       console.log(`[voice] ⚡ Pipeline aborted (interrupted by user)`);
@@ -512,7 +584,7 @@ async function onUtteranceComplete(userId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Play a WAV audio buffer through the voice connection.
+ * Play a WAV audio buffer through the voice connection (non-streaming).
  */
 async function playAudio(wavBuffer: Buffer): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -535,6 +607,42 @@ async function playAudio(wavBuffer: Buffer): Promise<void> {
       const onError = (err: Error) => {
         audioPlayer.removeListener(AudioPlayerStatus.Idle, onIdle);
         console.error("[voice] ❌ Audio player error:", err);
+        reject(err);
+      };
+
+      audioPlayer.once(AudioPlayerStatus.Idle, onIdle);
+      audioPlayer.once("error", onError);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+/**
+ * Play a streaming TTS result through the voice connection.
+ * Starts playback as soon as the PassThrough stream has data (after WAV header + first chunk).
+ */
+async function playStreamingAudio(ttsResult: TTSStreamResult): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    try {
+      dbg("play", "Creating audio resource from streaming TTS PassThrough");
+
+      const resource = createAudioResource(ttsResult.stream, {
+        inputType: StreamType.Arbitrary,
+      });
+
+      audioPlayer.play(resource);
+      dbg("play", `Streaming audio player started, status: ${audioPlayer.state.status}`);
+
+      const onIdle = () => {
+        audioPlayer.removeListener("error", onError);
+        dbg("play", "Streaming audio playback finished (idle)");
+        resolve();
+      };
+
+      const onError = (err: Error) => {
+        audioPlayer.removeListener(AudioPlayerStatus.Idle, onIdle);
+        console.error("[voice] ❌ Streaming audio player error:", err);
         reject(err);
       };
 
