@@ -1,4 +1,5 @@
 import { searchMemory, getMemoryLines } from "./memory.js";
+import { searchMem9, isMem9Enabled } from "./mem9.js";
 
 // ---------------------------------------------------------------------------
 // Tool definitions (passed to the Claude agent as available tools)
@@ -44,26 +45,56 @@ export const memoryTools = [
 ];
 
 // ---------------------------------------------------------------------------
-// Tool call handler
+// Tool call handler (async — queries both local FTS5 and mem9 cloud)
 // ---------------------------------------------------------------------------
 
-export function handleMemoryTool(
+export async function handleMemoryTool(
   name: string,
   input: Record<string, unknown>
-): string {
+): Promise<string> {
   switch (name) {
     case "memory_search": {
       const query = input.query as string;
       const maxResults = (input.max_results as number | undefined) ?? 5;
       console.log(`[memory] search: "${query}" (max ${maxResults})`);
 
-      const results = searchMemory(query, maxResults);
+      // Run local and cloud searches in parallel
+      const [localResults, cloudResults] = await Promise.all([
+        Promise.resolve(searchMemory(query, maxResults)),
+        searchMem9(query, maxResults),
+      ]);
 
-      if (results.length === 0) {
+      // Format local results
+      const local = localResults.map((r) => ({
+        source: "local" as const,
+        path: r.path,
+        chunkText: r.chunkText,
+        startLine: r.startLine,
+        endLine: r.endLine,
+        score: r.score,
+      }));
+
+      // Format cloud results
+      const cloud = cloudResults.map((r) => ({
+        source: "mem9" as const,
+        id: r.id,
+        memory: r.memory,
+        memory_type: r.memory_type,
+        tags: r.tags,
+      }));
+
+      const hasLocal = local.length > 0;
+      const hasCloud = cloud.length > 0;
+
+      if (!hasLocal && !hasCloud) {
         return JSON.stringify({ results: [], message: "No matches found." });
       }
 
-      return JSON.stringify({ results });
+      const response: Record<string, unknown> = {};
+      if (hasLocal) response.local = local;
+      if (hasCloud) response.mem9 = cloud;
+
+      return JSON.stringify(response);
     }
 
     case "memory_get": {

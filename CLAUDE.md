@@ -50,7 +50,8 @@ Tools are defined across multiple files and registered in `agent/agent.ts`:
 | `agent/tools.ts` | send_message, send_file, add_reaction, get_channel_history, create_thread | Discord channel operations |
 | `agent/dangerous-tools.ts` | bash, read_file, write_file | System access |
 | `agent/agent.ts` | get_conversation_history, get_conversation_stats | Cross-session conversation replay |
-| `memory/tools.ts` | memory_search, memory_get | BM25 FTS5 knowledge search |
+| `memory/tools.ts` | memory_search, memory_get | Hybrid search: local BM25 FTS5 + mem9 cloud |
+| `memory/mem9.ts` | (internal) | mem9 cloud memory API client |
 | `skills/tools.ts` | read_skill, list_skill_files | Progressive skill loading |
 | `evolution/tools.ts` | evolve_start, evolve_read, evolve_write, evolve_bash, evolve_propose, evolve_suggest, evolve_cancel, evolve_review, evolve_merge | Self-modification via PRs |
 
@@ -73,7 +74,7 @@ Sessions are keyed by thread/channel/user/DM combination. `agent/sessions.ts` re
 ### Soul, Memory, and Skills
 
 - **Soul**: Bot personality loaded from `data/SOUL.md` with filesystem watcher for hot-reload. Injected into every system prompt.
-- **Memory**: Markdown files in `data/` and `data/memory/` are chunked and indexed into SQLite FTS5. BM25-ranked full-text search.
+- **Memory**: Hybrid search — local markdown files in `data/` and `data/memory/` chunked and indexed into SQLite FTS5 (BM25-ranked), plus optional mem9 cloud memory (`src/memory/mem9.ts`). Both sources are queried in parallel on every `memory_search` call. mem9 config lives in `data/skills/mem9/auth.json`. Graceful fallback if mem9 is unavailable.
 - **Skills**: SKILL.md files with YAML frontmatter in `data/skills/`. Progressive loading — only metadata in system prompt; full content via `read_skill` tool. Installable from GitHub URLs.
 
 ### Cron Service

@@ -109,9 +109,9 @@ async function executeVoiceTool(
   name: string,
   input: Record<string, unknown>,
 ): Promise<string> {
-  // Memory tools (sync)
+  // Memory tools (async — local FTS5 + mem9 cloud)
   if (name === "memory_search" || name === "memory_get") {
-    return handleMemoryTool(name, input);
+    return await handleMemoryTool(name, input);
   }
   // Discord tools (async)
   if (

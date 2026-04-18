@@ -287,9 +287,9 @@ async function executeTool(
 ): Promise<string> {
   let result: string;
 
-  // Memory tools are synchronous
+  // Memory tools (async — queries local FTS5 + mem9 cloud in parallel)
   if (name === "memory_search" || name === "memory_get") {
-    result = handleMemoryTool(name, input);
+    result = await handleMemoryTool(name, input);
   }
   // Discord tools are async
   else if (name === "send_message" || name === "send_file" || name === "add_reaction" || name === "get_channel_history" || name === "create_thread") {

@@ -860,8 +860,9 @@ discordclaw/
 │   ├── soul/
 │   │   └── soul.ts            # Load SOUL.md, file watcher, hot-reload
 │   ├── memory/
+│   │   ├── mem9.ts            # mem9 cloud memory API client (parallel search)
 │   │   ├── memory.ts          # File discovery, FTS5 indexing, BM25 search, query sanitization
-│   │   └── tools.ts           # memory_search + memory_get tool definitions
+│   │   └── tools.ts           # memory_search + memory_get tool definitions (hybrid local+cloud)
 │   ├── cron/
 │   │   ├── types.ts           # Job, schedule, payload, delivery types
 │   │   ├── store.ts           # JSON persistence + JSONL run history + hot-reload
