@@ -817,7 +817,7 @@ const TOOL_EMOJI: Record<string, string> = {
 };
 
 /** Max length for tool input/result preview in Discord message */
-const MAX_TOOL_PREVIEW_LENGTH = 300;
+const MAX_TOOL_PREVIEW_LENGTH = 120;
 
 /** Truncate a string and add ellipsis if too long */
 function truncate(s: string, max: number): string {
@@ -870,37 +870,67 @@ function formatToolInput(toolName: string, input: Record<string, unknown>): stri
 }
 
 /**
- * Format a tool result for display. Truncates and wraps in a code block.
+ * Format a tool result for display as a brief inline indicator.
+ * MUST stay single-line — used inside `-#` small text which breaks with
+ * multi-line content or code blocks.
  */
 function formatToolResult(result: string): string {
-  // Try to parse JSON for prettier display
-  let display = result;
+  // Collapse all whitespace to single spaces for inline display
+  const flat = result.replace(/\s+/g, " ").trim();
+
+  // Try to parse JSON for smarter display
   try {
     const parsed = JSON.parse(result);
+
+    // Error responses
     if (parsed.error) {
-      return `❌ Error: ${truncate(String(parsed.error), MAX_TOOL_PREVIEW_LENGTH)}`;
+      return `❌ ${truncate(String(parsed.error).replace(/\s+/g, " "), 80)}`;
     }
-    // For success responses, show a brief summary
+
+    // Success with no extra data
     if (parsed.success === true) {
-      // Remove the success field and show the rest briefly
       const { success: _, ...rest } = parsed;
       const restStr = JSON.stringify(rest);
       if (restStr === "{}" || restStr === "{}") return "✅";
-      display = restStr;
-    } else {
-      display = JSON.stringify(parsed);
+      return `✅ ${truncate(restStr.replace(/\s+/g, " "), 80)}`;
+    }
+
+    // Arrays — show count
+    if (Array.isArray(parsed)) {
+      return `(${parsed.length} items)`;
+    }
+
+    // Exit code from bash
+    if ("exit_code" in parsed) {
+      const exitCode = parsed.exit_code;
+      const stdout = String(parsed.stdout || "").replace(/\s+/g, " ").trim();
+      if (exitCode !== 0) {
+        const stderr = String(parsed.stderr || "").replace(/\s+/g, " ").trim();
+        return `❌ exit ${exitCode}: ${truncate(stderr || stdout, 80)}`;
+      }
+      if (!stdout) return "✅";
+      return `\`${truncate(stdout, 80)}\``;
+    }
+
+    // mem9 + local memory results
+    if (parsed.mem9 && Array.isArray(parsed.mem9)) {
+      const localCount = Array.isArray(parsed.local) ? parsed.local.length : 0;
+      return `(${parsed.mem9.length} mem9 + ${localCount} local results)`;
+    }
+    if (parsed.results && Array.isArray(parsed.results)) {
+      return `(${parsed.results.length} results)`;
     }
   } catch {
     // Not JSON — use raw
   }
 
-  const truncated = truncate(display, MAX_TOOL_PREVIEW_LENGTH);
-
-  // If short enough, inline it; otherwise use a code block
-  if (truncated.length < 80 && !truncated.includes("\n")) {
-    return truncated;
+  // Short results: show inline
+  if (flat.length <= 80) {
+    return flat ? `\`${flat}\`` : "✅";
   }
-  return `\`\`\`\n${truncated}\n\`\`\``;
+
+  // Long results: truncate, never use code blocks
+  return `\`${truncate(flat, 80)}\``;
 }
 
 /**
