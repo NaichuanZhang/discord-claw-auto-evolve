@@ -2,7 +2,8 @@
 // Daytona Sandbox CI — ephemeral sandbox for evolution validation
 // ---------------------------------------------------------------------------
 // Spins up a Daytona sandbox, clones the evolution branch, installs deps,
-// runs typecheck + tests, and tears down. True isolated CI without GitHub Actions.
+// runs typecheck + integration boot test + full test suite, and tears down.
+// True isolated CI without GitHub Actions.
 // ---------------------------------------------------------------------------
 
 import { Daytona, Image } from "@daytona/sdk";
@@ -35,8 +36,10 @@ function buildNodeImage(): Image {
 export interface SandboxValidationResult {
   success: boolean;
   typecheckPassed: boolean;
+  bootTestPassed: boolean;
   testsPassed: boolean;
   typecheckOutput: string;
+  bootTestOutput: string;
   testsOutput: string;
   sandboxId?: string;
   durationMs: number;
@@ -151,12 +154,36 @@ export async function runSandboxValidation(opts: {
       `Typecheck: ${typecheckPassed ? "PASSED" : "FAILED"} (exit ${typecheckResult.exitCode})`,
     );
 
-    // 5. Run tests
-    emit("🧪 Running tests...");
+    // 5. Run integration boot test — the critical path heartbeat
+    //    Tests: DB init, Soul loading, Memory indexing, Skills service, Tool registration
+    //    Run separately so we get a distinct pass/fail signal for the boot pipeline.
+    emit("🔌 Running integration boot test...");
+    log("Running integration boot test (tests/integration/boot.test.ts)...");
+
+    const bootTestResult = await sandbox.process.executeCommand(
+      "npx vitest run tests/integration/boot.test.ts --reporter=verbose 2>&1",
+      WORK_DIR,
+      undefined,
+      COMMAND_TIMEOUT,
+    );
+    const bootTestPassed = bootTestResult.exitCode === 0;
+    const bootTestOutput = bootTestResult.result || "";
+
+    if (bootTestPassed) {
+      emit("✅ Integration boot test passed");
+    } else {
+      emit("❌ Integration boot test failed");
+    }
+    log(
+      `Boot test: ${bootTestPassed ? "PASSED" : "FAILED"} (exit ${bootTestResult.exitCode})`,
+    );
+
+    // 6. Run full test suite (all tests — includes boot test again, that's fine)
+    emit("🧪 Running full test suite...");
     log("Running npx vitest run...");
 
     const testsResult = await sandbox.process.executeCommand(
-      "npx vitest run 2>&1",
+      "npx vitest run --reporter=verbose 2>&1",
       WORK_DIR,
       undefined,
       COMMAND_TIMEOUT,
@@ -165,16 +192,16 @@ export async function runSandboxValidation(opts: {
     const testsOutput = testsResult.result || "";
 
     if (testsPassed) {
-      emit("✅ Tests passed");
+      emit("✅ Full test suite passed");
     } else {
-      emit("❌ Tests failed");
+      emit("❌ Full test suite failed");
     }
     log(
       `Tests: ${testsPassed ? "PASSED" : "FAILED"} (exit ${testsResult.exitCode})`,
     );
 
     const durationMs = Date.now() - startTime;
-    const success = typecheckPassed && testsPassed;
+    const success = typecheckPassed && bootTestPassed && testsPassed;
 
     emit(
       success
@@ -185,8 +212,10 @@ export async function runSandboxValidation(opts: {
     return {
       success,
       typecheckPassed,
+      bootTestPassed,
       testsPassed,
       typecheckOutput: typecheckOutput.slice(0, 4000),
+      bootTestOutput: bootTestOutput.slice(0, 4000),
       testsOutput: testsOutput.slice(0, 4000),
       sandboxId,
       durationMs,
