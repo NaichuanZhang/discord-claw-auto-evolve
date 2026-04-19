@@ -168,7 +168,7 @@ async function startCoachSession(channel: VoiceBasedChannel): Promise<void> {
   // Play an intro message after a short delay
   setTimeout(async () => {
     try {
-      const introText = "Listen up, cupcake. I see every single watt, every heartbeat, every lazy pedal stroke. You talk, I hear you. You complain, I destroy you. Now shut up and ride.";
+      const introText = "Okay, I am here viz you now. I see eferyzing — ze vatts, ze heart rate, efery pedal stroke. Vun zing ve vill always do, is fight for it efery day. Zat is vat ve do. So, let's go. Los!";
       console.log(`[voice-coach] Playing intro: "${introText}"`);
       const audio = await synthesizeElevenLabs(introText);
       await playCoachAudio(audio);
