@@ -310,7 +310,7 @@ export async function startEvolution(opts: {
  *   1. Run local typecheck as a fast pre-flight (catches obvious errors quickly)
  *   2. Stage + commit + push the branch
  *   3. If Daytona is available: run full validation in an ephemeral sandbox
- *      (clean install, typecheck, tests — true isolation)
+ *      (clean install, typecheck, integration boot test, full test suite — true isolation)
  *   4. If Daytona is not available: run tests locally in worktree as fallback
  *   5. Create the PR with quality gate results
  *   6. Clean up worktree
@@ -391,8 +391,11 @@ export async function finalizeEvolution(opts: {
         if (!sandboxResult.typecheckPassed) {
           errors.push(`**Typecheck failed:**\n\`\`\`\n${sandboxResult.typecheckOutput.slice(0, 2000)}\n\`\`\``);
         }
+        if (!sandboxResult.bootTestPassed) {
+          errors.push(`**Integration boot test failed:**\n\`\`\`\n${sandboxResult.bootTestOutput.slice(0, 2000)}\n\`\`\``);
+        }
         if (!sandboxResult.testsPassed) {
-          errors.push(`**Tests failed:**\n\`\`\`\n${sandboxResult.testsOutput.slice(0, 2000)}\n\`\`\``);
+          errors.push(`**Test suite failed:**\n\`\`\`\n${sandboxResult.testsOutput.slice(0, 2000)}\n\`\`\``);
         }
         throw new Error(
           `Sandbox validation failed (${Math.round(sandboxResult.durationMs / 1000)}s):\n${errors.join("\n\n")}`,
@@ -428,8 +431,9 @@ export async function finalizeEvolution(opts: {
     ? [
         "### Quality Gates (Daytona Sandbox CI ☁️)",
         `- ✅ Pre-flight typecheck passed (local)`,
-        `- ✅ TypeScript typecheck passed (sandbox)`,
-        `- ✅ Integration tests passed (sandbox)`,
+        `- ${sandboxResult.typecheckPassed ? "✅" : "❌"} TypeScript typecheck (sandbox)`,
+        `- ${sandboxResult.bootTestPassed ? "✅" : "❌"} Integration boot test (sandbox) — DB, Soul, Memory, Skills, Tools`,
+        `- ${sandboxResult.testsPassed ? "✅" : "❌"} Full test suite (sandbox)`,
         `- ⏱️ Sandbox validation: ${Math.round(sandboxResult.durationMs / 1000)}s`,
         sandboxResult.sandboxId ? `- 🆔 Sandbox: \`${sandboxResult.sandboxId}\`` : "",
       ].filter(Boolean)
