@@ -78,15 +78,18 @@ export function splitMessage(text: string): string[] {
  *
  * @param target  Any object with a `.send(text)` method (channel or thread).
  * @param text    The full message text.
+ * @returns The last sent message object (useful for getting the message ID).
  */
 export async function sendChunked(
-  target: { send: (content: string) => Promise<unknown> },
+  target: { send: (content: string) => Promise<any> },
   text: string,
-): Promise<void> {
+): Promise<any> {
   const chunks = splitMessage(text);
+  let lastSent: any;
   for (const chunk of chunks) {
-    await target.send(chunk);
+    lastSent = await target.send(chunk);
   }
+  return lastSent;
 }
 
 // ---------------------------------------------------------------------------
