@@ -9,6 +9,7 @@ import {
   isGuildTextChannel,
   ensureThread,
   generateThreadName,
+  sendChunked,
   MAX_THREAD_NAME_LENGTH,
 } from "../shared/discord-utils.js";
 import {
@@ -185,7 +186,8 @@ export async function handleDiscordTool(
           threadId = sendTarget.id;
         }
 
-        const sent = await sendTarget.send(text);
+        // Use sendChunked to automatically split messages exceeding 2000 chars
+        const sent = await sendChunked(sendTarget, text);
         return JSON.stringify({
           success: true,
           message_id: sent.id,
@@ -375,9 +377,9 @@ export async function handleDiscordTool(
         // Register as bot-created thread
         registerBotThread(thread.id);
 
-        // Send initial message if provided
+        // Send initial message if provided, using chunking for long messages
         if (initialMessage) {
-          await thread.send(initialMessage);
+          await sendChunked(thread, initialMessage);
         }
 
         return JSON.stringify({
