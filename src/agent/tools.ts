@@ -135,14 +135,26 @@ export function setDiscordClient(client: any): void {
 }
 
 // ---------------------------------------------------------------------------
-// Session context for artifact tracking
+// Session context for artifact tracking and thread routing
 // ---------------------------------------------------------------------------
 
 /** Current session ID, set by the message handler before tool dispatch. */
 let currentSessionId: string | null = null;
 
-export function setToolSessionContext(sessionId: string | null): void {
+/**
+ * Current thread ID, set by the message handler before tool dispatch.
+ * When set, tools like send_message and send_file will route to this
+ * existing thread instead of creating a new one — prevents duplicate
+ * threads when the conversation is already happening in a thread.
+ */
+let currentThreadId: string | null = null;
+
+export function setToolSessionContext(
+  sessionId: string | null,
+  threadId?: string | null,
+): void {
   currentSessionId = sessionId;
+  currentThreadId = threadId ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +163,46 @@ export function setToolSessionContext(sessionId: string | null): void {
 
 /** Discord's max file upload size for bots (default tier: 25 MB). */
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
+
+// ---------------------------------------------------------------------------
+// Helper: resolve send target for guild text channels
+// ---------------------------------------------------------------------------
+
+/**
+ * Given a guild text channel, resolve where to actually send the message/file.
+ * If we're already in a thread (currentThreadId is set), reuse it.
+ * Otherwise, create a new thread.
+ *
+ * @returns [sendTarget, threadId] — the channel to send to and its ID if it's a thread.
+ */
+async function resolveThreadTarget(
+  channel: any,
+  threadName: string,
+  source: string,
+): Promise<[any, string | undefined]> {
+  // If the conversation is already in a thread, reuse it instead of creating a new one
+  if (currentThreadId) {
+    try {
+      const existingThread = await discordClient.channels.fetch(currentThreadId);
+      if (existingThread && existingThread.send) {
+        console.log(
+          `[${source}] Reusing existing thread ${currentThreadId} (skipping new thread creation)`,
+        );
+        return [existingThread, currentThreadId];
+      }
+    } catch (err) {
+      // Thread may have been deleted/archived — fall through to create a new one
+      console.warn(
+        `[${source}] Could not fetch existing thread ${currentThreadId}, creating new one:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  // No existing thread context — create a new thread
+  const sendTarget = await ensureThread(channel, threadName, source);
+  return [sendTarget, sendTarget.id];
+}
 
 // ---------------------------------------------------------------------------
 // Tool handler
@@ -177,13 +229,16 @@ export async function handleDiscordTool(
           });
         }
 
-        // If targeting a guild text channel, auto-create a thread
+        // If targeting a guild text channel, route to existing thread or create one
         let sendTarget = channel;
         let threadId: string | undefined;
         if (isGuildTextChannel(channel)) {
           const threadName = generateThreadName(text);
-          sendTarget = await ensureThread(channel, threadName, "agent");
-          threadId = sendTarget.id;
+          [sendTarget, threadId] = await resolveThreadTarget(
+            channel,
+            threadName,
+            "agent",
+          );
         }
 
         // Use sendChunked to automatically split messages exceeding 2000 chars
@@ -264,8 +319,8 @@ export async function handleDiscordTool(
         }
 
         // Enforce thread-only policy for files: if targeting a guild text
-        // channel, auto-create a thread so files/artifacts stay organized
-        // and don't clutter the main channel.
+        // channel, route to existing thread or create a new one so
+        // files/artifacts stay organized and don't clutter the main channel.
         let sendTarget = channel;
         let threadId: string | undefined;
         if (isGuildTextChannel(channel)) {
@@ -273,8 +328,11 @@ export async function handleDiscordTool(
             message || filename,
             `File: ${filename}`,
           );
-          sendTarget = await ensureThread(channel, threadName, "agent:send_file");
-          threadId = sendTarget.id;
+          [sendTarget, threadId] = await resolveThreadTarget(
+            channel,
+            threadName,
+            "agent:send_file",
+          );
         }
 
         const attachment: { attachment: string; name?: string } = {

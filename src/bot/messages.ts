@@ -1438,6 +1438,7 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
       history,
       channelConfig,
       onToolCallProgress,
+      threadId: sessionThreadId,
       signal,
     });
     const durationMs = Date.now() - startTime;

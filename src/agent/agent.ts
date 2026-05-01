@@ -494,6 +494,8 @@ export async function processMessage(opts: {
   onToolCallProgress?: OnToolCallProgress;
   /** Optional abort signal — checked between agentic loop turns */
   signal?: AbortSignal;
+  /** Thread ID for the current conversation — prevents creating duplicate threads */
+  threadId?: string;
 }): Promise<AgentResponse> {
   const systemPrompt = buildSystemPrompt({
     context: opts.context,
@@ -504,7 +506,7 @@ export async function processMessage(opts: {
   setEvolutionContext(undefined, opts.context.userId);
 
   // Set session context so Discord tools (send_file) can register artifacts
-  setToolSessionContext(opts.sessionId);
+  setToolSessionContext(opts.sessionId, opts.threadId);
 
   // Build conversation history and append the current message
   const messages: Anthropic.Messages.MessageParam[] = [
