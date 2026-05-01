@@ -263,9 +263,19 @@ export async function handleDiscordTool(
           });
         }
 
-        // Send directly to the specified channel — no auto-thread-creation.
-        // The agent should be sending to the conversation thread channel_id.
-        const sendTarget = channel;
+        // Enforce thread-only policy for files: if targeting a guild text
+        // channel, auto-create a thread so files/artifacts stay organized
+        // and don't clutter the main channel.
+        let sendTarget = channel;
+        let threadId: string | undefined;
+        if (isGuildTextChannel(channel)) {
+          const threadName = generateThreadName(
+            message || filename,
+            `File: ${filename}`,
+          );
+          sendTarget = await ensureThread(channel, threadName, "agent:send_file");
+          threadId = sendTarget.id;
+        }
 
         const attachment: { attachment: string; name?: string } = {
           attachment: filePath,
@@ -296,11 +306,12 @@ export async function handleDiscordTool(
         return JSON.stringify({
           success: true,
           message_id: sent.id,
-          channel_id: channelId,
+          channel_id: threadId ?? channelId,
           filename: sentAttachment?.name ?? filename,
           size: formatFileSize(stats.size),
           size_bytes: stats.size,
           ...(artifactId ? { artifact_id: artifactId } : {}),
+          ...(threadId ? { thread_id: threadId, parent_channel_id: channelId } : {}),
         });
       }
 
