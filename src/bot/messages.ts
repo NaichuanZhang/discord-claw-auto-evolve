@@ -1432,6 +1432,8 @@ export async function handleMessage(message: DiscordMessage): Promise<void> {
       context: {
         guildName,
         channelName,
+        channelId: configChannelId,
+        threadId: sessionThreadId,
         userName: message.author.displayName ?? message.author.username,
         userId: message.author.id,
       },

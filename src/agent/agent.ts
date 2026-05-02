@@ -234,6 +234,8 @@ function buildSystemPrompt(opts: {
   context: {
     guildName?: string;
     channelName: string;
+    channelId?: string;
+    threadId?: string;
     userName: string;
     userId: string;
   };
@@ -277,6 +279,14 @@ function buildSystemPrompt(opts: {
     contextLines.push(`- Server: ${ctx.guildName}`);
   }
   contextLines.push(`- Channel: #${ctx.channelName}`);
+  // Include channel/thread IDs so tools like get_channel_history use the
+  // correct IDs instead of hallucinating them.
+  if (ctx.threadId) {
+    contextLines.push(`- Thread ID: ${ctx.threadId} (use this as channel_id for get_channel_history in the current conversation)`);
+  }
+  if (ctx.channelId) {
+    contextLines.push(`- Channel ID: ${ctx.channelId}`);
+  }
   contextLines.push(`- Speaking with: ${ctx.userName} (ID: ${ctx.userId})`);
   parts.push(contextLines.join("\n"));
 
@@ -485,6 +495,8 @@ export async function processMessage(opts: {
   context: {
     guildName?: string;
     channelName: string;
+    channelId?: string;
+    threadId?: string;
     userName: string;
     userId: string;
   };
