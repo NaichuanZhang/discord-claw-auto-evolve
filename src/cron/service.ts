@@ -13,6 +13,23 @@ function log(...args: unknown[]): void {
 
 const MAX_CONSECUTIVE_ERRORS = 3;
 const MAX_TIMER_DELAY_MS = 60_000;
+const CRON_JOB_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Wraps a promise with a timeout. Rejects with an error if the promise
+ * doesn't resolve within the given milliseconds.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Timeout: ${label} exceeded ${ms / 1000}s limit`));
+    }, ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
 
 export class CronService {
   private store: CronStore;
@@ -294,10 +311,14 @@ export class CronService {
         if (!this.executeAgentTurn) {
           throw new Error("Agent turn callback not registered");
         }
-        log(`[agentTurn] ${job.name}: executing agent turn`);
-        result = await this.executeAgentTurn(
-          job.payload.message,
-          job.payload.model,
+        log(`[agentTurn] ${job.name}: executing agent turn (timeout: ${CRON_JOB_TIMEOUT_MS / 1000}s)`);
+        result = await withTimeout(
+          this.executeAgentTurn(
+            job.payload.message,
+            job.payload.model,
+          ),
+          CRON_JOB_TIMEOUT_MS,
+          `job "${job.name}"`,
         );
       }
 
