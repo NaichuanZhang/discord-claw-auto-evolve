@@ -13,7 +13,7 @@ function log(...args: unknown[]): void {
 
 const MAX_CONSECUTIVE_ERRORS = 3;
 const MAX_TIMER_DELAY_MS = 60_000;
-const CRON_JOB_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const CRON_JOB_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes (default)
 
 /**
  * Wraps a promise with a timeout. Rejects with an error if the promise
@@ -301,6 +301,9 @@ export class CronService {
     let result: string | undefined;
     let error: string | undefined;
 
+    // Use per-job timeout if specified, otherwise fall back to global default
+    const timeoutMs = job.timeoutMs ?? CRON_JOB_TIMEOUT_MS;
+
     try {
       if (job.payload.kind === "systemEvent") {
         // For system events, log the text. Delivery to Discord happens below
@@ -311,13 +314,13 @@ export class CronService {
         if (!this.executeAgentTurn) {
           throw new Error("Agent turn callback not registered");
         }
-        log(`[agentTurn] ${job.name}: executing agent turn (timeout: ${CRON_JOB_TIMEOUT_MS / 1000}s)`);
+        log(`[agentTurn] ${job.name}: executing agent turn (timeout: ${timeoutMs / 1000}s)`);
         result = await withTimeout(
           this.executeAgentTurn(
             job.payload.message,
             job.payload.model,
           ),
-          CRON_JOB_TIMEOUT_MS,
+          timeoutMs,
           `job "${job.name}"`,
         );
       }

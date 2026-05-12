@@ -20,6 +20,8 @@ export type CronJob = {
   description?: string;
   enabled: boolean;
   deleteAfterRun?: boolean;
+  /** Per-job timeout in milliseconds. Overrides the global default (10 min). */
+  timeoutMs?: number;
   schedule: CronSchedule;
   payload: CronPayload;
   delivery?: CronDelivery;
@@ -51,6 +53,7 @@ export type CronJobPatch = Partial<
     | "payload"
     | "delivery"
     | "deleteAfterRun"
+    | "timeoutMs"
   >
 >;
 
